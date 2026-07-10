@@ -61,6 +61,23 @@ Then open **http://localhost:4570**.
 > If your package manager blocks install scripts, approve it
 > (`npm install-scripts approve node-pty`) and re-run `npm install`.
 
+### Run in the background
+
+Use the `grv.sh` control script to run the server detached and stop it safely:
+
+```bash
+./grv.sh start     # launch in the background (logs → grv.log)
+./grv.sh status    # is it running?
+./grv.sh stop      # stop it
+./grv.sh restart
+```
+
+`stop` only kills the process it started: it tracks the PID in `.grv.pid` and
+verifies that PID is still *our* `node server.js` (matching command and working
+directory) before signalling it — so it never kills an unrelated process that
+happens to reuse the PID or hold the port. Set a different port with
+`PORT=5000 ./grv.sh start`.
+
 ## 4. Create a profile
 
 On first launch the Profiles panel opens automatically. Add a profile with:

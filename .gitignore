@@ -5,9 +5,10 @@ node_modules/
 config.json
 profiles.json
 
-# Logs
+# Logs & runtime pidfile
 *.log
 npm-debug.log*
+.grv.pid
 
 # OS / editor cruft
 .DS_Store
