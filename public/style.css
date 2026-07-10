@@ -511,6 +511,10 @@ html, body {
 #terminal-container { flex: 1; min-height: 0; background: var(--bg); position: relative; }
 .term-instance { width: 100%; height: 100%; padding: 6px 4px 6px 8px; }
 .term-instance .xterm { height: 100%; }
+/* xterm v6 ships .xterm-viewport { background-color: #000 } as a default; the
+   strip below the last rendered row peeks through as a black line. Match it to
+   the terminal theme background. */
+.term-instance .xterm-viewport { background-color: var(--bg) !important; }
 
 /* Dirty-diff gutter bars (changed lines vs HEAD) — wide + full-height click target */
 .dirty-gutter { width: 6px !important; margin-left: 4px; cursor: pointer; border-radius: 1px; }
