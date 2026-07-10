@@ -888,9 +888,12 @@ function activateTab(id) {
       showEditorArea('preview');
       renderPreview();
     } else {
+      // Show the container BEFORE setting the model so Monaco lays out against
+      // a real (non-zero, visible) element — otherwise it can throw on resize.
+      showEditorArea('plain');
       plainEditor.setModel(tab.model);
       plainEditor.updateOptions({ readOnly: false });
-      showEditorArea('plain');
+      plainEditor.layout();
       if (tab.viewState) plainEditor.restoreViewState(tab.viewState);
       ensureDecorations(tab);
     }
@@ -899,9 +902,12 @@ function activateTab(id) {
     const editable = tab.kind === 'diff-unstaged';
     document.getElementById('save-btn').style.display = editable ? 'inline-block' : 'none';
     document.getElementById('readonly-note').style.display = editable ? 'none' : 'inline';
+    // Container must be visible before setModel/layout or the diff editor's
+    // view crashes with "coordinatesConverter" null on the next resize.
+    showEditorArea('diff');
     diffEditor.setModel({ original: tab.origModel, modified: tab.modModel });
     diffEditor.getModifiedEditor().updateOptions({ readOnly: !editable });
-    showEditorArea('diff');
+    diffEditor.layout();
     if (tab.viewState) diffEditor.restoreViewState(tab.viewState);
   }
 
