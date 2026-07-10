@@ -198,8 +198,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 // Serve xterm assets locally (cdnjs serves them with a MIME type the browser's
 // ORB blocks), so vendor them from node_modules.
-app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/xterm')));
-app.use('/vendor/xterm-addon-fit', express.static(path.join(__dirname, 'node_modules/xterm-addon-fit')));
+app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/@xterm/xterm')));
+app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules/@xterm/addon-fit')));
 
 // Profiles
 app.get('/api/profiles', (req, res) => res.json({ profiles, active: activeProfileName }));
