@@ -71,15 +71,18 @@ function sshTerminalArgs(profile) {
   return args;
 }
 
-function resetConnection() {
-  const profile = getActive();
-  if (!profile) return;
+// Tear down a specific profile's SSH ControlMaster. Takes the profile
+// explicitly (never getActive()) so callers control exactly which master dies.
+function resetConnection(profile) {
+  if (!profile || !profile.host) return;
   spawn('ssh', ['-o', `ControlPath=${ctlPath(profile)}`, '-O', 'exit', profile.host])
     .on('error', () => {});
 }
 
-function run(cmd) {
-  const profile = getActive();
+// Run a command against a specific profile. Capturing the profile once (rather
+// than re-reading getActive() across awaits) guarantees a request never mixes
+// two profiles if the active profile is switched mid-flight.
+function runWith(profile, cmd) {
   if (!profile || !profile.host) return Promise.reject(new Error('No active profile configured.'));
   if (!profile.remotePath)       return Promise.reject(new Error('No remotePath set for this profile.'));
 
@@ -94,7 +97,9 @@ function run(cmd) {
   });
 }
 
+function run(cmd) { return runWith(getActive(), cmd); }
 function git(args) { return run(`git ${args}`); }
+function gitWith(profile, args) { return runWith(profile, `git ${args}`); }
 
 function writeRemoteFile(remotePath, content) {
   const profile = getActive();
@@ -211,8 +216,10 @@ app.post('/api/profiles', (req, res) => {
 app.delete('/api/profiles/:name', (req, res) => {
   const { name } = req.params;
   if (!profiles[name]) return res.status(404).json({ error: 'Not found.' });
+  const removed = profiles[name];           // capture before mutating
   delete profiles[name];
-  if (activeProfileName === name) { activeProfileName = Object.keys(profiles)[0] || null; resetConnection(); }
+  if (activeProfileName === name) activeProfileName = Object.keys(profiles)[0] || null;
+  resetConnection(removed);                 // tear down the DELETED profile's master
   writeProfiles();
   res.json({ ok: true });
 });
@@ -220,19 +227,22 @@ app.delete('/api/profiles/:name', (req, res) => {
 app.post('/api/profiles/:name/activate', (req, res) => {
   const { name } = req.params;
   if (!profiles[name]) return res.status(404).json({ error: 'Not found.' });
-  if (activeProfileName !== name) { resetConnection(); activeProfileName = name; writeProfiles(); }
+  // No resetConnection here: each profile has its own ControlPath (keyed by
+  // user@host), so switching doesn't disturb another profile's master, and
+  // tearing one down mid-flight would break in-flight commands for no reason.
+  if (activeProfileName !== name) { activeProfileName = name; writeProfiles(); }
   res.json({ ok: true });
 });
 
 // Git
 app.get('/api/status', async (req, res) => {
+  const profile = getActive();               // capture once for the whole request
   try {
     const [branchRes, statusRes] = await Promise.all([
-      git('rev-parse --abbrev-ref HEAD'),
-      git('status --porcelain -z'),
+      gitWith(profile, 'rev-parse --abbrev-ref HEAD'),
+      gitWith(profile, 'status --porcelain -z'),
     ]);
     if (statusRes.code !== 0) return res.status(500).json({ error: statusRes.stderr || 'git status failed' });
-    const profile = getActive();
     res.json({ branch: branchRes.stdout.trim() || '(unknown)', remotePath: profile?.remotePath || '', ...parseStatus(statusRes.stdout) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -241,14 +251,15 @@ app.get('/api/file-diff', async (req, res) => {
   const filePath = req.query.path;
   const mode = req.query.mode === 'staged' ? 'staged' : 'unstaged';
   if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  const profile = getActive();               // capture once so both sides read the same profile
   try {
     let original = '', modified = '';
     if (mode === 'staged') {
-      const [h, idx] = await Promise.all([git(`show HEAD:${shQuote(filePath)}`), git(`show :${shQuote(filePath)}`)]);
+      const [h, idx] = await Promise.all([gitWith(profile, `show HEAD:${shQuote(filePath)}`), gitWith(profile, `show :${shQuote(filePath)}`)]);
       original = h.code === 0 ? h.stdout : '';
       modified = idx.code === 0 ? idx.stdout : '';
     } else {
-      const [idx, wt] = await Promise.all([git(`show :${shQuote(filePath)}`), run(`cat ${shQuote(filePath)}`)]);
+      const [idx, wt] = await Promise.all([gitWith(profile, `show :${shQuote(filePath)}`), runWith(profile, `cat ${shQuote(filePath)}`)]);
       original = idx.code === 0 ? idx.stdout : '';
       modified = wt.code === 0 ? wt.stdout : '';
     }
@@ -316,11 +327,12 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024;
 app.get('/api/file-content', async (req, res) => {
   const filePath = req.query.path;
   if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  const profile = getActive();               // capture once: size + content from same profile
   try {
-    const sizeRes = await run(`wc -c < ${shQuote(filePath)}`);
+    const sizeRes = await runWith(profile, `wc -c < ${shQuote(filePath)}`);
     const size = parseInt((sizeRes.stdout || '0').trim(), 10) || 0;
     if (size > MAX_FILE_BYTES) return res.json({ tooLarge: true, size, language: guessLanguage(filePath) });
-    const contentRes = await run(`cat ${shQuote(filePath)}`);
+    const contentRes = await runWith(profile, `cat ${shQuote(filePath)}`);
     if (contentRes.code !== 0) return res.status(500).json({ error: contentRes.stderr || 'Could not read file' });
     const content = contentRes.stdout;
     if (content.slice(0, 8000).includes(' ')) return res.json({ binary: true, language: 'plaintext' });

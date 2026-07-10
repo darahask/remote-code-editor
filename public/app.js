@@ -299,8 +299,23 @@ document.getElementById('pf-save').addEventListener('click', async () => {
   } catch (err) { toast(err.message); }
 });
 
+// Close all file/diff tabs (they belong to the outgoing profile — keeping them
+// open risks saving to a same-named file on the WRONG host after a switch, C3).
+// Terminals keep their own independent SSH connection, so they're left alone.
+// Returns false if the user cancelled because of unsaved changes.
+function closeProfileScopedTabs(force) {
+  const scoped = tabs.filter(t => t.kind === 'explorer' || t.kind === 'diff-staged' || t.kind === 'diff-unstaged');
+  if (!force) {
+    const dirty = scoped.filter(t => t.dirty).length;
+    if (dirty && !confirm(`Switching profiles will discard unsaved changes in ${dirty} open file(s). Continue?`)) return false;
+  }
+  for (const t of scoped.slice()) { t.dirty = false; closeTab(t.id); }
+  return true;
+}
+
 async function activateProfile(name) {
   if (name === profileState.active) { closeProfilesOverlay(); return; }
+  if (!closeProfileScopedTabs(false)) return;   // user kept unsaved changes → abort switch
   try {
     await fetch(`/api/profiles/${encodeURIComponent(name)}/activate`, { method: 'POST' });
     profileState.active = name;
@@ -319,8 +334,12 @@ async function deleteProfile(name) {
     const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
+    const wasActive = profileState.active === name;
     delete profileState.profiles[name];
-    if (profileState.active === name) profileState.active = Object.keys(profileState.profiles)[0] || null;
+    if (wasActive) {
+      profileState.active = Object.keys(profileState.profiles)[0] || null;
+      closeProfileScopedTabs(true);            // files of the deleted profile are orphaned
+    }
     updateStatusBar();
     renderProfileList();
     if (profileState.active) { loadTree(); loadStatus(); }
@@ -531,29 +550,40 @@ document.getElementById('file-search').addEventListener('input', e => {
 // File open / save
 // ---------------------------------------------------------------------------
 
+// Monotonic token for "what the user most recently asked to open". A slow
+// fetch that resolves after a newer open must NOT steal focus (C1).
+let openSeq = 0;
+
 // Open a file in a tab (reusing an existing tab if already open) and reveal it.
 async function openFile(filePath) {
   revealInTree(filePath);
   const id = explorerTabId(filePath);
   if (getTab(id)) { activateTab(id); return; }
+  const seq = ++openSeq;
   try {
     const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 
-    const tab = {
-      id, kind: 'explorer', path: filePath, label: baseName(filePath),
-      isMarkdown: isMarkdownPath(filePath), previewMode: false,
-      dirty: false, viewState: null, model: null, message: null,
-      language: data.language || 'plaintext',
-      headContent: undefined, decoIds: [], hasChanges: false,
-    };
-    if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
-    else if (data.binary) tab.message = 'Binary file — no text preview.';
-    else tab.model = monaco.editor.createModel(data.content, data.language);
-
-    tabs.push(tab);
-    activateTab(id);
+    // A concurrent open of the same file may have created the tab while we
+    // awaited — reuse it instead of pushing a duplicate (C2).
+    let tab = getTab(id);
+    if (!tab) {
+      tab = {
+        id, kind: 'explorer', path: filePath, label: baseName(filePath),
+        isMarkdown: isMarkdownPath(filePath), previewMode: false,
+        dirty: false, viewState: null, model: null, message: null,
+        language: data.language || 'plaintext',
+        headContent: undefined, decoIds: [], hasChanges: false,
+      };
+      if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
+      else if (data.binary) tab.message = 'Binary file — no text preview.';
+      else tab.model = monaco.editor.createModel(data.content, data.language);
+      tabs.push(tab);
+      renderTabs();
+    }
+    // Only take over the editor if this is still the latest open request (C1).
+    if (seq === openSeq) activateTab(id);
   } catch (err) { toast('Could not load file: ' + err.message); }
 }
 
@@ -561,6 +591,7 @@ async function reloadExplorerTab(tab) {
   const res = await fetch(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
   const data = await res.json();
   if (data.error) { toast(data.error); return; }
+  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
   tab.model?.dispose();
   tab.model = null;
   tab.message = null;
@@ -577,6 +608,7 @@ async function reloadDiffTab(tab) {
   const res = await fetch(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
   const data = await res.json();
   if (data.error) { toast(data.error); return; }
+  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
   tab.origModel?.dispose(); tab.modModel?.dispose();
   tab.origModel = monaco.editor.createModel(data.original, data.language);
   tab.modModel  = monaco.editor.createModel(data.modified,  data.language);
@@ -941,8 +973,13 @@ function closeTab(id) {
   if (idx < 0) return;
   const tab = tabs[idx];
   if (tab.dirty && !confirm(`"${tab.label}" has unsaved changes. Close anyway?`)) return;
+  tab.disposed = true;
   tab.model?.dispose(); tab.origModel?.dispose(); tab.modModel?.dispose();
+  tab.model = tab.origModel = tab.modModel = null;   // avoid double-dispose (I1)
   if (tab.kind === 'terminal') {
+    // Detach WS handlers BEFORE closing/disposing so a late onclose/onerror/
+    // onmessage/onopen can't call term.write() on a disposed xterm (C4).
+    if (tab.ws) { tab.ws.onopen = tab.ws.onmessage = tab.ws.onclose = tab.ws.onerror = null; }
     try { tab.ws.close(); } catch (_) {}
     try { tab.term.dispose(); } catch (_) {}
     tab.el?.remove();
@@ -1325,22 +1362,28 @@ async function selectDiff(filePath, mode, rowEl, revealLine) {
 
   const id = diffTabId(filePath, mode);
   if (getTab(id)) { activateTab(id); revealDiffLine(revealLine); return; }
+  const seq = ++openSeq;
 
   try {
     const res = await fetch(`/api/file-diff?path=${encodeURIComponent(filePath)}&mode=${mode}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 
-    const tab = {
-      id, kind: mode === 'staged' ? 'diff-staged' : 'diff-unstaged',
-      path: filePath, label: baseName(filePath),
-      isMarkdown: false, previewMode: false, dirty: false, viewState: null,
-      origModel: monaco.editor.createModel(data.original, data.language),
-      modModel:  monaco.editor.createModel(data.modified,  data.language),
-    };
-    tabs.push(tab);
-    activateTab(id);
-    revealDiffLine(revealLine);
+    // reuse a tab a concurrent call may have created for the same diff (C2)
+    let tab = getTab(id);
+    if (!tab) {
+      tab = {
+        id, kind: mode === 'staged' ? 'diff-staged' : 'diff-unstaged',
+        path: filePath, label: baseName(filePath),
+        isMarkdown: false, previewMode: false, dirty: false, viewState: null,
+        origModel: monaco.editor.createModel(data.original, data.language),
+        modModel:  monaco.editor.createModel(data.modified,  data.language),
+      };
+      tabs.push(tab);
+      renderTabs();
+    }
+    // only take over the editor if still the latest requested open (C1)
+    if (seq === openSeq) { activateTab(id); revealDiffLine(revealLine); }
   } catch (err) { toast(err.message); }
 }
 
