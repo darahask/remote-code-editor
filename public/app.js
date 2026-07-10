@@ -31,6 +31,10 @@ let previewMode = false;
 let tabs = [];
 let activeTabId = null;
 let treeData = null; // cached tree for reveal-without-refetch
+let fileStatusMap = new Map(); // path -> { letter, cls } git status for tree coloring
+let dirStatusMap = new Map();  // dir path -> cls (folder contains changes)
+
+const LETTER_CLS = { M: 'git-modified', D: 'git-deleted', A: 'git-added', R: 'git-renamed', U: 'git-untracked', '?': 'git-untracked' };
 
 function isMarkdownPath(p) { return /\.(md|markdown|mdx)$/i.test(p || ''); }
 function baseName(p) { return p.split('/').pop(); }
@@ -390,6 +394,7 @@ function renderNodes(nodes, container, depth, parentPath) {
       const row = document.createElement('div');
       row.className = 'tree-row tree-dir' + (node.ignored ? ' ignored' : '');
       row.style.paddingLeft = `${6 + depth * 14}px`;
+      row.dataset.path = fullPath;
 
       const isExpanded = expandedDirs.has(fullPath);
       const twist = document.createElement('span');
@@ -403,6 +408,8 @@ function renderNodes(nodes, container, depth, parentPath) {
       const name = document.createElement('span');
       name.className = 'tree-name';
       name.textContent = node.name;
+      const dcls = dirStatusMap.get(fullPath);
+      if (dcls) name.classList.add(dcls);
       row.appendChild(twist);
       row.appendChild(folder);
       row.appendChild(name);
@@ -446,9 +453,17 @@ function renderNodes(nodes, container, depth, parentPath) {
       const name = document.createElement('span');
       name.className = 'tree-name';
       name.textContent = node.name;
+      const st = fileStatusMap.get(node.path);
+      if (st) name.classList.add(st.cls);
       row.appendChild(twistSpacer);
       row.appendChild(icon);
       row.appendChild(name);
+      if (st) {
+        const badge = document.createElement('span');
+        badge.className = 'tree-status ' + st.cls;
+        badge.textContent = st.letter;
+        row.appendChild(badge);
+      }
       row.addEventListener('click', () => openFile(node.path));
       frag.appendChild(row);
     }
@@ -1171,7 +1186,64 @@ async function loadStatus() {
     const badge = document.getElementById('scm-badge');
     badge.textContent = total;
     badge.style.display = total > 0 ? 'inline-block' : 'none';
+
+    buildStatusMaps(data);
+    refreshTreeColors();
   } catch (_) {}
+}
+
+// Build path→status maps for coloring the Explorer tree (VS Code style).
+// Precedence for a file: untracked > working-tree(unstaged) > staged.
+function buildStatusMaps(data) {
+  fileStatusMap = new Map();
+  dirStatusMap = new Map();
+
+  const setFile = (path, letter) => {
+    const cls = LETTER_CLS[letter] || 'git-modified';
+    fileStatusMap.set(path, { letter: letter === '?' ? 'U' : letter, cls });
+    // mark ancestor dirs; a tracked change (non-untracked) wins over untracked-only
+    const tracked = cls !== 'git-untracked';
+    const parts = path.split('/');
+    let acc = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      acc = acc ? acc + '/' + parts[i] : parts[i];
+      const cur = dirStatusMap.get(acc);
+      if (tracked) dirStatusMap.set(acc, 'git-modified');
+      else if (!cur) dirStatusMap.set(acc, 'git-untracked');
+    }
+  };
+
+  for (const f of data.staged)   setFile(f.path, f.label);
+  for (const f of data.unstaged) setFile(f.path, f.label);   // overrides staged
+  for (const f of data.untracked) setFile(f.path, 'U');       // overrides both
+}
+
+// Re-color existing tree rows in place (no re-render, preserves scroll).
+function refreshTreeColors() {
+  for (const row of document.querySelectorAll('#tree-container .tree-row')) {
+    const p = row.dataset.path;
+    if (!p) continue;
+    const name = row.querySelector('.tree-name');
+    const isDir = row.classList.contains('tree-dir');
+    // clear old
+    name.classList.remove('git-modified', 'git-untracked', 'git-added', 'git-deleted', 'git-renamed');
+    const oldBadge = row.querySelector('.tree-status');
+    if (oldBadge) oldBadge.remove();
+
+    if (isDir) {
+      const cls = dirStatusMap.get(p);
+      if (cls) name.classList.add(cls);
+    } else {
+      const st = fileStatusMap.get(p);
+      if (st) {
+        name.classList.add(st.cls);
+        const badge = document.createElement('span');
+        badge.className = 'tree-status ' + st.cls;
+        badge.textContent = st.letter;
+        row.appendChild(badge);
+      }
+    }
+  }
 }
 
 function renderList(containerId, files, mode, isStaged) {

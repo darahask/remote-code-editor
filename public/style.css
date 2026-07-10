@@ -18,6 +18,12 @@
   --statusbar-fg: #CEC8BC;
   --statusbar-dim:#7A7060;
 
+  /* git status colors (VS Code-like) for the file tree */
+  --git-modified:  #B57614;
+  --git-untracked: #4E9A52;
+  --git-added:     #4E9A52;
+  --git-deleted:   #C0492F;
+
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, monospace;
   --radius: 4px;
@@ -223,6 +229,22 @@ html, body {
   color: var(--text);
 }
 .tree-dir > .tree-name { color: var(--text); font-weight: 500; }
+
+/* git status coloring (VS Code-like) */
+.tree-name.git-modified, .tree-name.git-renamed { color: var(--git-modified); }
+.tree-name.git-untracked, .tree-name.git-added   { color: var(--git-untracked); }
+.tree-name.git-deleted { color: var(--git-deleted); }
+.tree-status {
+  margin-left: auto;
+  padding-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.tree-status.git-modified, .tree-status.git-renamed { color: var(--git-modified); }
+.tree-status.git-untracked, .tree-status.git-added   { color: var(--git-untracked); }
+.tree-status.git-deleted { color: var(--git-deleted); }
 .tree-name .dir {
   color: var(--text-xs);
   font-size: 11px;
