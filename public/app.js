@@ -66,6 +66,9 @@ require(['vs/editor/editor.main'], () => {
 
   diffEditor = monaco.editor.createDiffEditor(document.getElementById('diff-editor-container'), {
     automaticLayout: true, renderSideBySide: true,
+    // never silently collapse to inline just because a stale/zero width was
+    // measured (e.g. when switching in from a terminal) — always side-by-side
+    useInlineViewWhenSpaceIsLimited: false,
     minimap: { enabled: true }, originalEditable: false, fontSize,
   });
 
@@ -893,7 +896,7 @@ function activateTab(id) {
       showEditorArea('plain');
       plainEditor.setModel(tab.model);
       plainEditor.updateOptions({ readOnly: false });
-      plainEditor.layout();
+      relayout(plainEditor);
       if (tab.viewState) plainEditor.restoreViewState(tab.viewState);
       ensureDecorations(tab);
     }
@@ -907,12 +910,22 @@ function activateTab(id) {
     showEditorArea('diff');
     diffEditor.setModel({ original: tab.origModel, modified: tab.modModel });
     diffEditor.getModifiedEditor().updateOptions({ readOnly: !editable });
-    diffEditor.layout();
+    relayout(diffEditor);
     if (tab.viewState) diffEditor.restoreViewState(tab.viewState);
   }
 
   renderTabs();
   syncTreeSelection(tab);
+}
+
+// Lay out a Monaco editor now and again after the browser has painted the
+// just-shown container, so it never keeps a stale/zero size (which makes the
+// diff collapse to inline and the scrollbar/minimap mis-render).
+function relayout(editor) {
+  try { editor.layout(); } catch (_) {}
+  requestAnimationFrame(() => {
+    try { editor.layout(); } catch (_) {}
+  });
 }
 
 function syncTreeSelection(tab) {
