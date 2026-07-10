@@ -8,6 +8,7 @@ const ICONS = {
   folderOpen: '<svg class="ic ic-folder" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.5 4a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .7.3L7.6 4.5h6a1 1 0 0 1 1 1v1H4.3a1 1 0 0 0-.95.68L1.5 12.8z" fill="currentColor" opacity="0.55"/><path d="M3.35 6.5A1 1 0 0 1 4.3 5.8h10.4a.7.7 0 0 1 .66.93l-1.6 5A1 1 0 0 1 12.8 12.5H1.9z" fill="currentColor" opacity="0.9"/></svg>',
   file: '<svg class="ic ic-file" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4 1.75A.75.75 0 0 1 4.75 1H9.5l3.5 3.5v9.75a.75.75 0 0 1-.75.75h-7.5A.75.75 0 0 1 4 14.25z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.25 1.25v3.5h3.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
   terminal: '<svg class="ic ic-term" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 6l2.2 2L4 10M8 10.2h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  download: '<svg class="ic" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 2.5v7m0 0L5.2 6.7M8 9.5l2.8-2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12.5h10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
 };
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,7 @@ let currentOpenKind = null;
 let isDirty = false;
 let allFiles = [];
 let showIgnored = false;
+let selectedDir = '';                // folder targeted by Ctrl+V paste ('' = repo root)
 const expandedDirs = new Set();
 let currentGitSelection = null;
 let profileState = { profiles: {}, active: null }; // cached, no re-fetch on panel open
@@ -435,6 +437,12 @@ function renderNodes(nodes, container, depth, parentPath) {
       row.appendChild(twist);
       row.appendChild(folder);
       row.appendChild(name);
+      const dirDl = document.createElement('button');
+      dirDl.className = 'row-download';
+      dirDl.title = 'Download folder (.tar.gz)';
+      dirDl.innerHTML = ICONS.download;
+      dirDl.addEventListener('click', (e) => { e.stopPropagation(); downloadDir(fullPath); });
+      row.appendChild(dirDl);
       frag.appendChild(row);
 
       const childContainer = document.createElement('div');
@@ -449,7 +457,17 @@ function renderNodes(nodes, container, depth, parentPath) {
       };
       if (isExpanded) renderChildren();
 
+      const openDir = () => {
+        if (childContainer.style.display !== 'none') return;
+        renderChildren();
+        childContainer.style.display = 'block';
+        twist.classList.add('open');
+        folder.innerHTML = ICONS.folderOpen;
+        expandedDirs.add(fullPath);
+      };
+
       row.addEventListener('click', () => {
+        selectDir(fullPath, row);            // remember target for Ctrl+V paste
         const opening = childContainer.style.display === 'none';
         if (opening) renderChildren();
         childContainer.style.display = opening ? 'block' : 'none';
@@ -458,6 +476,9 @@ function renderNodes(nodes, container, depth, parentPath) {
         if (opening) expandedDirs.add(fullPath);
         else expandedDirs.delete(fullPath);
       });
+
+      if (fullPath === selectedDir) row.classList.add('dir-selected');
+      attachDropZone(row, fullPath, openDir);
     } else {
       const row = document.createElement('div');
       row.className = 'tree-row tree-file' + (node.ignored ? ' ignored' : '');
@@ -486,12 +507,249 @@ function renderNodes(nodes, container, depth, parentPath) {
         badge.textContent = st.letter;
         row.appendChild(badge);
       }
+      const dl = document.createElement('button');
+      dl.className = 'row-download';
+      dl.title = 'Download';
+      dl.innerHTML = ICONS.download;
+      dl.addEventListener('click', (e) => { e.stopPropagation(); downloadFile(node.path); });
+      row.appendChild(dl);
       row.addEventListener('click', () => openFile(node.path));
       frag.appendChild(row);
     }
   }
   container.appendChild(frag);
 }
+
+// ---------------------------------------------------------------------------
+// Upload / download (drag-drop, paste, per-file download)
+// ---------------------------------------------------------------------------
+
+// Mark a folder as the paste target and highlight it.
+function selectDir(fullPath, row) {
+  selectedDir = fullPath;
+  document.querySelectorAll('#tree-container .dir-selected').forEach(r => r.classList.remove('dir-selected'));
+  if (row) row.classList.add('dir-selected');
+}
+
+function triggerDownload(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+function downloadFile(p) {
+  triggerDownload(`/api/download?path=${encodeURIComponent(p)}`, p.split('/').pop());
+}
+function downloadDir(p) {
+  triggerDownload(`/api/download-dir?path=${encodeURIComponent(p)}`, (p.split('/').pop() || 'download') + '.tar.gz');
+}
+
+// Low-level: PUT one File/Blob to a repo-relative path. Returns
+// {ok} | {conflict} | {error}. Parent dirs are created server-side.
+async function uploadPath(body, rel, overwrite) {
+  let url = `/api/upload?path=${encodeURIComponent(rel)}`;
+  if (overwrite) url += '&overwrite=1';
+  const res = await fetch(url, { method: 'POST', body });
+  if (res.status === 409) return { conflict: true };
+  if (!res.ok) {
+    let msg = 'Upload failed';
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    return { error: msg };
+  }
+  return { ok: true };
+}
+
+async function checkExists(rel) {
+  try {
+    const res = await fetch(`/api/exists?path=${encodeURIComponent(rel)}`);
+    return res.ok ? (await res.json()).exists : false;
+  } catch (_) { return false; }
+}
+
+// Upload one loose file to <folder>/<name>, confirming before overwrite.
+async function uploadOne(fileOrBlob, folder, name) {
+  const rel = folder ? `${folder}/${name}` : name;
+  let r = await uploadPath(fileOrBlob, rel, false);
+  if (r.conflict) {
+    if (!confirm(`"${name}" already exists in ${folder || 'the repo root'}. Overwrite?`)) return false;
+    r = await uploadPath(fileOrBlob, rel, true);
+  }
+  if (r.error) { toast(`${name}: ${r.error}`); return false; }
+  return !!r.ok;
+}
+
+// Loose-file uploads (used by paste): each confirms its own overwrite.
+async function uploadFiles(files, folder) {
+  if (!files.length) return;
+  let ok = 0;
+  for (const f of files) if (await uploadOne(f, folder, f.name)) ok++;
+  if (ok) {
+    toast(`Uploaded ${ok} file${ok > 1 ? 's' : ''} to ${folder || 'repo root'}`, 'success');
+    await loadTree();
+    await loadStatus();
+  }
+}
+
+// --- Recursive folder drops ------------------------------------------------
+
+function readEntries(reader) {
+  return new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+}
+
+// Depth-first walk of a dropped FileSystemEntry, collecting {file, relPath}.
+async function walkEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    out.push({ file, relPath: prefix + entry.name });
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    let batch;
+    do {                                   // readEntries returns at most ~100 per call
+      batch = await readEntries(reader);
+      for (const child of batch) await walkEntry(child, prefix + entry.name + '/', out);
+    } while (batch.length);
+  }
+}
+
+// Gather dropped items into {file, relPath}[]. Entries must be pulled from the
+// DataTransfer synchronously (before any await), or the browser clears them.
+async function collectDropped(dt) {
+  const items = dt.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const entries = [];
+    for (const it of items) { const e = it.webkitGetAsEntry && it.webkitGetAsEntry(); if (e) entries.push(e); }
+    const out = [];
+    for (const e of entries) await walkEntry(e, '', out);
+    return out;
+  }
+  return Array.from(dt.files || []).map(f => ({ file: f, relPath: f.name }));   // no entry API: flat only
+}
+
+// Upload a mixed set of dropped files/folders under baseFolder. Folders get a
+// single overwrite confirm each; loose files use the per-file confirm.
+async function uploadDropped(dropList, baseFolder) {
+  if (!dropList.length) return;
+
+  const topFolders = new Set();
+  for (const d of dropList) {
+    const slash = d.relPath.indexOf('/');
+    if (slash > 0) topFolders.add(d.relPath.slice(0, slash));
+  }
+  const folderDecision = {};               // top folder -> upload? (false = skip)
+  for (const top of topFolders) {
+    const rel = baseFolder ? `${baseFolder}/${top}` : top;
+    folderDecision[top] = !(await checkExists(rel)) ||
+      confirm(`Folder "${top}" already exists in ${baseFolder || 'the repo root'}. Upload anyway and overwrite matching files?`);
+  }
+
+  let ok = 0, failed = 0;
+  for (const d of dropList) {
+    const slash = d.relPath.indexOf('/');
+    const top = slash > 0 ? d.relPath.slice(0, slash) : null;
+    if (top) {
+      if (folderDecision[top] === false) continue;
+      const rel = baseFolder ? `${baseFolder}/${d.relPath}` : d.relPath;
+      const r = await uploadPath(d.file, rel, true);
+      if (r.ok) ok++; else { failed++; if (r.error) toast(`${d.relPath}: ${r.error}`); }
+    } else {
+      if (await uploadOne(d.file, baseFolder, d.file.name)) ok++; else failed++;
+    }
+  }
+  if (ok) {
+    toast(`Uploaded ${ok} file${ok > 1 ? 's' : ''} to ${baseFolder || 'repo root'}${failed ? ` (${failed} failed)` : ''}`, 'success');
+    await loadTree();
+    await loadStatus();
+  } else if (failed) {
+    toast(`Upload failed (${failed} file${failed > 1 ? 's' : ''})`);
+  }
+}
+
+// Wire drag-drop onto a folder row: highlight while hovering, auto-expand a
+// collapsed folder after a short hover (VS Code behaviour), upload on drop.
+let dragExpandTimer = null, dragExpandPath = null;
+function clearDragExpand() { clearTimeout(dragExpandTimer); dragExpandTimer = null; dragExpandPath = null; }
+function setDropTarget(row) {
+  document.querySelectorAll('#tree-container .drop-target').forEach(r => r.classList.remove('drop-target'));
+  document.getElementById('tree-container').classList.remove('root-drop');
+  if (row) row.classList.add('drop-target');
+}
+
+function attachDropZone(row, fullPath, openDir) {
+  row.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    setDropTarget(row);
+    if (dragExpandPath !== fullPath) {
+      clearDragExpand();
+      dragExpandPath = fullPath;
+      dragExpandTimer = setTimeout(() => { openDir(); dragExpandTimer = null; }, 650);
+    }
+  });
+  row.addEventListener('dragleave', (e) => {
+    if (row.contains(e.relatedTarget)) return;   // ignore moves onto children
+    row.classList.remove('drop-target');
+    if (dragExpandPath === fullPath) clearDragExpand();
+  });
+  row.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(null);
+    clearDragExpand();
+    const dropped = await collectDropped(e.dataTransfer);
+    await uploadDropped(dropped, fullPath);
+  });
+}
+
+// Root-level drops (empty tree area) + Ctrl/Cmd+V paste, wired once.
+function initUploadTargets() {
+  const tree = document.getElementById('tree-container');
+
+  tree.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setDropTarget(null);
+    tree.classList.add('root-drop');
+    clearDragExpand();
+  });
+  tree.addEventListener('dragleave', (e) => { if (!tree.contains(e.relatedTarget)) tree.classList.remove('root-drop'); });
+  tree.addEventListener('drop', async (e) => {          // only fires if a folder row didn't handle it
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    tree.classList.remove('root-drop');
+    const dropped = await collectDropped(e.dataTransfer);
+    await uploadDropped(dropped, '');                    // '' = repo root
+  });
+
+  // Stop the browser from navigating away when a file is dropped outside a zone.
+  window.addEventListener('dragover', (e) => { if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault(); });
+  window.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault(); });
+
+  document.addEventListener('paste', async (e) => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (!files || !files.length) return;                // let text paste through
+    const ae = document.activeElement;
+    if (ae && (ae.closest('#terminal-container') || ae.closest('.monaco-editor') ||
+               ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    e.preventDefault();
+    const list = [];
+    for (const f of files) {
+      let name = f.name;
+      if (!name) {                                      // clipboard image (screenshot) has no filename
+        const ext = ((f.type.split('/')[1]) || 'bin').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+        name = `pasted-${Date.now()}.${ext}`;
+      }
+      list.push(new File([f], name, { type: f.type }));
+    }
+    await uploadFiles(list, selectedDir);
+  });
+}
+initUploadTargets();
 
 // ---------------------------------------------------------------------------
 // Search

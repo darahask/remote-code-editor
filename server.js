@@ -104,6 +104,13 @@ function gitWith(profile, args) { return runWith(profile, `git ${args}`); }
 function writeRemoteFile(remotePath, content) {
   const profile = getActive();
   if (!profile) return Promise.reject(new Error('No active profile.'));
+  return writeRemoteBuffer(profile, remotePath, Buffer.from(content, 'utf8'));
+}
+
+// Binary-safe write: pipes a raw Buffer into `cat > path` over SSH. Takes the
+// profile explicitly so uploads can't be redirected by a mid-flight switch.
+function writeRemoteBuffer(profile, remotePath, buffer) {
+  if (!profile || !profile.host) return Promise.reject(new Error('No active profile.'));
   return new Promise((resolve, reject) => {
     const proc = spawn('ssh', [...sshArgs(profile), `cat > ${shQuote(remotePath)}`]);
     let stderr = '';
@@ -113,8 +120,12 @@ function writeRemoteFile(remotePath, content) {
       resolve();
     });
     proc.on('error', reject);
-    proc.stdin.end(Buffer.from(content, 'utf8'));
+    proc.stdin.end(buffer);
   });
+}
+
+function remoteAbsPath(profile, relPath) {
+  return profile.remotePath.replace(/\/+$/, '') + '/' + relPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +357,80 @@ app.put('/api/file-content', async (req, res) => {
   if (typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
   try {
     const profile = getActive();
-    const remotePath = profile.remotePath.replace(/\/+$/, '') + '/' + filePath;
-    await writeRemoteFile(remotePath, content);
+    await writeRemoteFile(remoteAbsPath(profile, filePath), content);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Download: stream a remote file's raw bytes to the browser as an attachment.
+app.get('/api/download', (req, res) => {
+  const filePath = req.query.path;
+  if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  const profile = getActive();
+  if (!profile || !profile.remotePath) return res.status(400).json({ error: 'No active profile.' });
+
+  const proc = spawn('ssh', [...sshArgs(profile), `cat ${shQuote(remoteAbsPath(profile, filePath))}`]);
+  const name = path.basename(filePath).replace(/["\\\r\n]/g, '');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  proc.on('error', (err) => { if (!res.headersSent) res.status(500).json({ error: err.message }); });
+  proc.stdout.pipe(res);                       // stderr (ssh warnings) is intentionally not piped into the file
+  proc.on('close', (code) => { if (code !== 0 && !res.headersSent) res.status(500).end(); });
+  req.on('close', () => { try { proc.kill(); } catch (_) {} });
+});
+
+// Upload: raw body (one file) written to <repo>/<path>. 409 if the target
+// exists and ?overwrite=1 was not passed, so the client can confirm first.
+app.post('/api/upload', express.raw({ type: '*/*', limit: '100mb' }), async (req, res) => {
+  const rel = req.query.path;
+  const overwrite = req.query.overwrite === '1';
+  if (!isSafePath(rel)) return res.status(400).json({ error: 'Invalid path' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'Empty upload (folders are not supported).' });
+  const profile = getActive();
+  if (!profile || !profile.remotePath) return res.status(400).json({ error: 'No active profile.' });
+  try {
+    if (!overwrite) {
+      const chk = await runWith(profile, `test -e ${shQuote(rel)} && echo EXISTS || true`);
+      if ((chk.stdout || '').includes('EXISTS')) return res.status(409).json({ error: 'File already exists', exists: true });
+    }
+    const parent = path.posix.dirname(rel);        // create nested dirs for folder uploads
+    if (parent && parent !== '.') {
+      const mk = await runWith(profile, `mkdir -p ${shQuote(parent)}`);
+      if (mk.code !== 0) return res.status(500).json({ error: mk.stderr || 'mkdir failed' });
+    }
+    await writeRemoteBuffer(profile, remoteAbsPath(profile, rel), req.body);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Existence check for a repo-relative path (used to confirm folder overwrites).
+app.get('/api/exists', async (req, res) => {
+  const rel = req.query.path;
+  if (!isSafePath(rel)) return res.status(400).json({ error: 'Invalid path' });
+  const profile = getActive();
+  if (!profile || !profile.remotePath) return res.status(400).json({ error: 'No active profile.' });
+  try {
+    const chk = await runWith(profile, `test -e ${shQuote(rel)} && echo EXISTS || true`);
+    res.json({ exists: (chk.stdout || '').includes('EXISTS') });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Download a folder as a streamed .tar.gz (tar runs on the remote).
+app.get('/api/download-dir', (req, res) => {
+  const dirPath = req.query.path;
+  if (!isSafePath(dirPath)) return res.status(400).json({ error: 'Invalid path' });
+  const profile = getActive();
+  if (!profile || !profile.remotePath) return res.status(400).json({ error: 'No active profile.' });
+
+  const repo = profile.remotePath.replace(/\/+$/, '');
+  const proc = spawn('ssh', [...sshArgs(profile), `tar -czf - -C ${shQuote(repo)} ${shQuote(dirPath)}`]);
+  const name = (path.basename(dirPath) || 'download').replace(/["\\\r\n]/g, '');
+  res.setHeader('Content-Type', 'application/gzip');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}.tar.gz"`);
+  proc.on('error', (err) => { if (!res.headersSent) res.status(500).json({ error: err.message }); });
+  proc.stdout.pipe(res);                       // stderr (tar warnings) kept out of the archive stream
+  proc.on('close', (code) => { if (code !== 0 && !res.headersSent) res.status(500).end(); });
+  req.on('close', () => { try { proc.kill(); } catch (_) {} });
 });
 
 // ---------------------------------------------------------------------------
