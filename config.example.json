@@ -1,0 +1,11 @@
+{
+  "host": "your.server.ip.or.hostname",
+  "username": "your-ssh-user",
+  "remotePath": "/home/your-ssh-user/your-project",
+
+  "_comment_auth": "Auth is optional if you have keys in ~/.ssh/ or an SSH agent running.",
+  "port": 22,
+  "privateKeyPath": "",
+  "password": "",
+  "passphrase": ""
+}

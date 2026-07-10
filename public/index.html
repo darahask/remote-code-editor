@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Git Remote Viewer</title>
+<link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="tab-bar">
+      <button class="tab-btn active" data-view="explorer">Explorer</button>
+      <button class="tab-btn" data-view="scm">
+        Source Control
+        <span class="tab-badge" id="scm-badge" style="display:none">0</span>
+      </button>
+      <button id="refresh-btn" title="Refresh">↻</button>
+    </div>
+
+    <!-- Explorer view -->
+    <div class="view" id="view-explorer">
+      <div id="search-box">
+        <input id="file-search" type="text" placeholder="Search files…" autocomplete="off" />
+      </div>
+      <div id="search-results" style="display:none"></div>
+      <div id="tree-container"></div>
+      <label id="show-ignored-label">
+        <input type="checkbox" id="show-ignored" /> Show ignored files
+      </label>
+    </div>
+
+    <!-- Source Control view -->
+    <div class="view" id="view-scm" style="display:none">
+      <div id="branch-row">
+        <span id="branch-icon">⎇</span>
+        <span id="branch-name">—</span>
+      </div>
+
+      <div class="section" id="section-staged">
+        <div class="section-title">
+          <span class="twisty section-twisty"></span>
+          <span>Staged</span>
+          <span class="count" id="staged-count">0</span>
+        </div>
+        <div class="file-list" id="staged-list"></div>
+      </div>
+
+      <div class="section" id="section-unstaged">
+        <div class="section-title">
+          <span class="twisty section-twisty"></span>
+          <span>Changes</span>
+          <span class="count" id="unstaged-count">0</span>
+        </div>
+        <div class="file-list" id="unstaged-list"></div>
+      </div>
+
+      <div class="section" id="section-untracked">
+        <div class="section-title">
+          <span class="twisty section-twisty"></span>
+          <span>Untracked</span>
+          <span class="count" id="untracked-count">0</span>
+        </div>
+        <div class="file-list" id="untracked-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar-resizer" title="Drag to resize"></div>
+
+  <!-- Main editor -->
+  <div id="main">
+    <div id="editor-header" style="display:none">
+      <div id="tab-strip"></div>
+      <span id="editor-tools">
+        <button id="reload-btn" class="tool-btn" title="Reload file from remote">↻</button>
+        <button id="preview-btn" class="tool-btn" title="Toggle Markdown preview" style="display:none">Preview</button>
+        <label id="font-size-label" title="Editor font size">
+          <span>Aa</span>
+          <select id="font-size-select">
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="16">16</option>
+          </select>
+        </label>
+        <button id="save-btn" style="display:none">Save</button>
+        <span id="readonly-note" style="display:none">read-only</span>
+      </span>
+    </div>
+    <div id="diff-editor-container"></div>
+    <div id="plain-editor-container" style="display:none"></div>
+    <div id="preview-container" style="display:none">
+      <div id="preview-wrap">
+        <div class="preview-handle" id="preview-handle-left"></div>
+        <div id="preview-content"></div>
+        <div class="preview-handle" id="preview-handle-right"></div>
+      </div>
+    </div>
+    <div id="plain-message" style="display:none"></div>
+    <div id="terminal-container" style="display:none"></div>
+    <div id="empty-state">
+      <div id="empty-icon">⌥</div>
+      <p>Select a file to view it</p>
+    </div>
+  </div>
+</div>
+
+<!-- Status bar -->
+<div id="statusbar">
+  <button id="profile-btn" class="sb-item sb-profile" title="Profiles">
+    <span id="sb-profile-name">No profile</span>
+  </button>
+  <span class="sb-sep">·</span>
+  <span class="sb-item sb-branch">
+    <span id="sb-branch">—</span>
+  </span>
+  <span class="sb-sep">·</span>
+  <span class="sb-item sb-path" id="sb-path" title="">—</span>
+  <span class="sb-spacer"></span>
+  <button id="new-terminal-btn" class="sb-item sb-btn" title="New Terminal (Ctrl+`)">&#9646; Terminal</button>
+  <span id="sb-status" class="sb-item sb-conn"></span>
+</div>
+
+<!-- Profiles overlay -->
+<div id="profiles-overlay" style="display:none">
+  <div id="profiles-panel">
+    <div class="pp-header">
+      <span class="pp-title">Profiles</span>
+      <button id="pp-close">✕</button>
+    </div>
+    <div id="pp-list"></div>
+    <div id="pp-form-wrap">
+      <button id="pp-new-btn">+ Add profile</button>
+      <div id="pp-form" style="display:none">
+        <label class="pf-field">Name <input id="pf-name" type="text" placeholder="my-server" /></label>
+        <label class="pf-field">SSH host / alias <input id="pf-host" type="text" placeholder="ddev or 192.168.1.10" /></label>
+        <label class="pf-field">Username <input id="pf-username" type="text" placeholder="ubuntu (optional if in ~/.ssh/config)" /></label>
+        <label class="pf-field">Remote path <input id="pf-remotepath" type="text" placeholder="/home/user/myproject" /></label>
+        <div class="pf-actions">
+          <button id="pf-cancel">Cancel</button>
+          <button id="pf-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- marked + mermaid + xterm MUST load before Monaco's AMD loader, otherwise
+     they register as anonymous AMD modules instead of attaching to window. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script src="/vendor/xterm/lib/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+<script src="app.js?v=18"></script>
+</body>
+</html>

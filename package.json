@@ -1,0 +1,19 @@
+{
+  "name": "git-remote-viewer",
+  "version": "1.0.0",
+  "description": "A Git panel for remote servers, connected over SSH.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
+}

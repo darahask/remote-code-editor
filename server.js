@@ -1,0 +1,393 @@
+// server.js — uses the system `ssh` binary so ~/.ssh/config aliases just work.
+
+const fs   = require('fs');
+const path = require('path');
+const os   = require('os');
+const http = require('http');
+const { spawn } = require('child_process');
+const express = require('express');
+const { WebSocketServer } = require('ws');
+const pty = require('node-pty');
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+const PROFILES_PATH = path.join(__dirname, 'profiles.json');
+
+function readProfiles() {
+  if (!fs.existsSync(PROFILES_PATH)) return {};
+  try { return JSON.parse(fs.readFileSync(PROFILES_PATH, 'utf8')); }
+  catch (e) { return {}; }
+}
+
+function writeProfiles() {
+  fs.writeFileSync(PROFILES_PATH, JSON.stringify({ _active: activeProfileName, ...profiles }, null, 2), 'utf8');
+}
+
+const _saved = readProfiles();
+let activeProfileName = _saved._active || null;
+const profiles = Object.fromEntries(Object.entries(_saved).filter(([k]) => k !== '_active'));
+
+function getActive() {
+  return activeProfileName ? profiles[activeProfileName] : null;
+}
+
+// ---------------------------------------------------------------------------
+// SSH via system binary (respects ~/.ssh/config, agents, aliases)
+// ---------------------------------------------------------------------------
+
+function ctlPath(profile) {
+  const key = (profile.username ? profile.username + '@' : '') + profile.host;
+  return path.join(os.tmpdir(), `grv-ctl-${key}`);
+}
+
+function sshArgs(profile) {
+  const args = [
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ControlMaster=auto',
+    '-o', `ControlPath=${ctlPath(profile)}`,
+    '-o', 'ControlPersist=120',
+  ];
+  if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
+  args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
+  return args;
+}
+
+// Args for an interactive login shell over SSH, cd'd into the repo folder.
+function sshTerminalArgs(profile) {
+  const args = [
+    '-tt',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ControlMaster=auto',
+    '-o', `ControlPath=${ctlPath(profile)}`,
+    '-o', 'ControlPersist=120',
+  ];
+  if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
+  args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
+  const cwd = profile.remotePath ? `cd ${shQuote(profile.remotePath)} 2>/dev/null; ` : '';
+  args.push(`${cwd}exec $SHELL -l`);
+  return args;
+}
+
+function resetConnection() {
+  const profile = getActive();
+  if (!profile) return;
+  spawn('ssh', ['-o', `ControlPath=${ctlPath(profile)}`, '-O', 'exit', profile.host])
+    .on('error', () => {});
+}
+
+function run(cmd) {
+  const profile = getActive();
+  if (!profile || !profile.host) return Promise.reject(new Error('No active profile configured.'));
+  if (!profile.remotePath)       return Promise.reject(new Error('No remotePath set for this profile.'));
+
+  return new Promise((resolve, reject) => {
+    const fullCmd = `cd ${shQuote(profile.remotePath)} && ${cmd}`;
+    const proc = spawn('ssh', [...sshArgs(profile), fullCmd]);
+    let stdout = '', stderr = '';
+    proc.stdout.on('data', d => { stdout += d.toString('utf8'); });
+    proc.stderr.on('data', d => { stderr += d.toString('utf8'); });
+    proc.on('close', code => resolve({ stdout, stderr, code }));
+    proc.on('error', err => reject(err));
+  });
+}
+
+function git(args) { return run(`git ${args}`); }
+
+function writeRemoteFile(remotePath, content) {
+  const profile = getActive();
+  if (!profile) return Promise.reject(new Error('No active profile.'));
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ssh', [...sshArgs(profile), `cat > ${shQuote(remotePath)}`]);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error(stderr || 'Write failed'));
+      resolve();
+    });
+    proc.on('error', reject);
+    proc.stdin.end(Buffer.from(content, 'utf8'));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function shQuote(str) {
+  return `'${String(str).replace(/'/g, `'\\''`)}'`;
+}
+
+function isSafePath(p) {
+  if (!p || typeof p !== 'string' || p.includes('\0') || p.startsWith('/')) return false;
+  const parts = p.split('/');
+  return !parts.includes('..') && !parts.includes('.');
+}
+
+function guessLanguage(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return ({
+    '.js': 'javascript', '.jsx': 'javascript', '.ts': 'typescript', '.tsx': 'typescript',
+    '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust', '.java': 'java',
+    '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cs': 'csharp',
+    '.php': 'php', '.sh': 'shell', '.bash': 'shell', '.yml': 'yaml', '.yaml': 'yaml',
+    '.json': 'json', '.html': 'html', '.css': 'css', '.scss': 'scss', '.md': 'markdown',
+    '.sql': 'sql', '.xml': 'xml', '.vue': 'html', '.kt': 'kotlin', '.swift': 'swift',
+  })[ext] || 'plaintext';
+}
+
+// ---------------------------------------------------------------------------
+// Git status parsing
+// ---------------------------------------------------------------------------
+
+function parseStatus(raw) {
+  const staged = [], unstaged = [], untracked = [];
+  const tokens = raw.split('\0');
+  if (tokens.at(-1) === '') tokens.pop();
+  let i = 0;
+  while (i < tokens.length) {
+    const entry = tokens[i++];
+    const x = entry[0], y = entry[1], filePath = entry.slice(3);
+    let origPath = null;
+    if (x === 'R' || y === 'R' || x === 'C' || y === 'C') origPath = tokens[i++];
+    if (x === '?' && y === '?') { untracked.push({ path: filePath, status: '?', label: 'U' }); continue; }
+    if (x !== ' ' && x !== '?') staged.push({ path: filePath, origPath, status: x, label: x });
+    if (y !== ' ' && y !== '?') unstaged.push({ path: filePath, origPath, status: y, label: y });
+  }
+  return { staged, unstaged, untracked };
+}
+
+function buildTree(paths) {
+  const root = { type: 'dir', name: '', children: {} };
+  for (const p of paths) {
+    const parts = p.split('/');
+    let node = root;
+    parts.forEach((part, i) => {
+      if (i === parts.length - 1) {
+        node.children[part] = { type: 'file', name: part, path: p };
+      } else {
+        node.children[part] ??= { type: 'dir', name: part, children: {} };
+        node = node.children[part];
+      }
+    });
+  }
+  return root;
+}
+
+function treeToJSON(node, ignoredSet) {
+  if (node.type === 'file') return { type: 'file', name: node.name, path: node.path, ignored: ignoredSet.has(node.path) };
+  const kids = Object.values(node.children)
+    .sort((a, b) => a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name))
+    .map(c => treeToJSON(c, ignoredSet));
+  return { type: 'dir', name: node.name, children: kids, ignored: kids.length > 0 && kids.every(k => k.ignored) };
+}
+
+// ---------------------------------------------------------------------------
+// Express routes
+// ---------------------------------------------------------------------------
+
+const app = express();
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+// Serve xterm assets locally (cdnjs serves them with a MIME type the browser's
+// ORB blocks), so vendor them from node_modules.
+app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/xterm')));
+app.use('/vendor/xterm-addon-fit', express.static(path.join(__dirname, 'node_modules/xterm-addon-fit')));
+
+// Profiles
+app.get('/api/profiles', (req, res) => res.json({ profiles, active: activeProfileName }));
+
+app.post('/api/profiles', (req, res) => {
+  const { name, host, username, remotePath } = req.body || {};
+  if (!name || !host || !remotePath) return res.status(400).json({ error: 'name, host, and remotePath are required.' });
+  if (name === '_active') return res.status(400).json({ error: 'Reserved name.' });
+  profiles[name] = { host, username: username || '', remotePath };
+  writeProfiles();
+  res.json({ ok: true });
+});
+
+app.delete('/api/profiles/:name', (req, res) => {
+  const { name } = req.params;
+  if (!profiles[name]) return res.status(404).json({ error: 'Not found.' });
+  delete profiles[name];
+  if (activeProfileName === name) { activeProfileName = Object.keys(profiles)[0] || null; resetConnection(); }
+  writeProfiles();
+  res.json({ ok: true });
+});
+
+app.post('/api/profiles/:name/activate', (req, res) => {
+  const { name } = req.params;
+  if (!profiles[name]) return res.status(404).json({ error: 'Not found.' });
+  if (activeProfileName !== name) { resetConnection(); activeProfileName = name; writeProfiles(); }
+  res.json({ ok: true });
+});
+
+// Git
+app.get('/api/status', async (req, res) => {
+  try {
+    const [branchRes, statusRes] = await Promise.all([
+      git('rev-parse --abbrev-ref HEAD'),
+      git('status --porcelain -z'),
+    ]);
+    if (statusRes.code !== 0) return res.status(500).json({ error: statusRes.stderr || 'git status failed' });
+    const profile = getActive();
+    res.json({ branch: branchRes.stdout.trim() || '(unknown)', remotePath: profile?.remotePath || '', ...parseStatus(statusRes.stdout) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/file-diff', async (req, res) => {
+  const filePath = req.query.path;
+  const mode = req.query.mode === 'staged' ? 'staged' : 'unstaged';
+  if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    let original = '', modified = '';
+    if (mode === 'staged') {
+      const [h, idx] = await Promise.all([git(`show HEAD:${shQuote(filePath)}`), git(`show :${shQuote(filePath)}`)]);
+      original = h.code === 0 ? h.stdout : '';
+      modified = idx.code === 0 ? idx.stdout : '';
+    } else {
+      const [idx, wt] = await Promise.all([git(`show :${shQuote(filePath)}`), run(`cat ${shQuote(filePath)}`)]);
+      original = idx.code === 0 ? idx.stdout : '';
+      modified = wt.code === 0 ? wt.stdout : '';
+    }
+    res.json({ original, modified, language: guessLanguage(filePath) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// HEAD (committed) version of a file, for dirty-diff gutter decorations.
+// Returns { content, tracked }. tracked=false means the file isn't in HEAD.
+app.get('/api/file-head', async (req, res) => {
+  const filePath = req.query.path;
+  if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    const r = await git(`show HEAD:${shQuote(filePath)}`);
+    res.json({ content: r.code === 0 ? r.stdout : '', tracked: r.code === 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/stage', async (req, res) => {
+  const { path: fp } = req.body;
+  if (!isSafePath(fp)) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    const r = await git(`add -- ${shQuote(fp)}`);
+    if (r.code !== 0) return res.status(500).json({ error: r.stderr });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/unstage', async (req, res) => {
+  const { path: fp } = req.body;
+  if (!isSafePath(fp)) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    const r = await git(`restore --staged -- ${shQuote(fp)}`);
+    if (r.code !== 0) return res.status(500).json({ error: r.stderr });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/tree', async (req, res) => {
+  try {
+    const showAll = req.query.all === '1';
+    const result = await git(showAll ? 'ls-files --cached --others -z' : 'ls-files --cached --others --exclude-standard -z');
+    if (result.code !== 0) return res.status(500).json({ error: result.stderr });
+    const files = result.stdout.split('\0').filter(Boolean).sort();
+
+    const ignoredFiles = new Set(), ignoredDirs = [];
+    if (showAll) {
+      const ignRes = await git('status --porcelain --ignored=matching -z');
+      if (ignRes.code === 0) {
+        for (const entry of ignRes.stdout.split('\0').filter(Boolean)) {
+          if (!entry.startsWith('!!')) continue;
+          const p = entry.slice(3);
+          p.endsWith('/') ? ignoredDirs.push(p.slice(0, -1)) : ignoredFiles.add(p);
+        }
+      }
+    }
+    const ignoredSet = { has: p => ignoredFiles.has(p) || ignoredDirs.some(d => p === d || p.startsWith(d + '/')) };
+    const tree = treeToJSON(buildTree(files), ignoredSet);
+    res.json({ tree: tree.children, files, showAll });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+app.get('/api/file-content', async (req, res) => {
+  const filePath = req.query.path;
+  if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  try {
+    const sizeRes = await run(`wc -c < ${shQuote(filePath)}`);
+    const size = parseInt((sizeRes.stdout || '0').trim(), 10) || 0;
+    if (size > MAX_FILE_BYTES) return res.json({ tooLarge: true, size, language: guessLanguage(filePath) });
+    const contentRes = await run(`cat ${shQuote(filePath)}`);
+    if (contentRes.code !== 0) return res.status(500).json({ error: contentRes.stderr || 'Could not read file' });
+    const content = contentRes.stdout;
+    if (content.slice(0, 8000).includes(' ')) return res.json({ binary: true, language: 'plaintext' });
+    res.json({ content, language: guessLanguage(filePath) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/file-content', async (req, res) => {
+  const { path: filePath, content } = req.body || {};
+  if (!isSafePath(filePath)) return res.status(400).json({ error: 'Invalid path' });
+  if (typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
+  try {
+    const profile = getActive();
+    const remotePath = profile.remotePath.replace(/\/+$/, '') + '/' + filePath;
+    await writeRemoteFile(remotePath, content);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---------------------------------------------------------------------------
+// Terminal (PTY-backed SSH over WebSocket)
+// ---------------------------------------------------------------------------
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/terminal' });
+
+wss.on('connection', (ws, req) => {
+  const profile = getActive();
+  if (!profile || !profile.host) {
+    ws.send('\r\n\x1b[31mNo active profile. Create one first.\x1b[0m\r\n');
+    ws.close();
+    return;
+  }
+
+  const url = new URL(req.url, 'http://localhost');
+  const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
+  const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
+
+  let term;
+  try {
+    term = pty.spawn('ssh', sshTerminalArgs(profile), {
+      name: 'xterm-256color',
+      cols, rows,
+      cwd: os.homedir(),
+      env: process.env,
+    });
+  } catch (err) {
+    ws.send(`\r\n\x1b[31mFailed to start terminal: ${err.message}\x1b[0m\r\n`);
+    ws.close();
+    return;
+  }
+
+  term.onData((data) => { try { ws.send(data); } catch (_) {} });
+  term.onExit(() => { try { ws.close(); } catch (_) {} });
+
+  ws.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg.type === 'input') term.write(msg.data);
+    else if (msg.type === 'resize') { try { term.resize(msg.cols, msg.rows); } catch (_) {} }
+  });
+
+  ws.on('close', () => { try { term.kill(); } catch (_) {} });
+});
+
+const PORT = process.env.PORT || 4570;
+server.listen(PORT, () => {
+  console.log(`Git Remote Viewer → http://localhost:${PORT}`);
+  if (!activeProfileName) console.log('No profiles yet — open the UI to create one.');
+});

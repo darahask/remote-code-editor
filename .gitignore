@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Runtime / user-specific config (contains server host, user, paths)
+config.json
+profiles.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Env
+.env
+.env.*
