@@ -1,75 +1,191 @@
+/* ============================================================================
+   Glass UI — liquid-glass theme (light + dark) for the remote code editor.
+   Translucent, backdrop-blurred "chrome" (sidebar, tabs, header, status bar,
+   modals) floats over an animated gradient mesh. The editor and terminal panes
+   stay solid (tinted to match) for maximum code readability.
+   ============================================================================ */
+
 :root {
-  --bg:           #F6F3EE;
-  --sidebar-bg:   #EDEAD4;
-  --panel-bg:     #F9F7F3;
-  --border:       #D9D4C8;
-  --text:         #2E2A24;
-  --text-dim:     #7A7060;
-  --text-xs:      #9A8E7C;
-  --hover:        #E4DFD5;
-  --active:       #D8D2C4;
-  --accent:       #9B6E2E;
-  --accent-light: #EDE3D2;
-  --added:        #3D7A3D;
-  --modified:     #8F6A20;
-  --deleted:      #B04030;
-  --untracked:    #3A6E8F;
-  --statusbar-bg: #2A2520;
-  --statusbar-fg: #CEC8BC;
-  --statusbar-dim:#7A7060;
-
-  /* git status colors (VS Code-like) for the file tree */
-  --git-modified:  #B57614;
-  --git-untracked: #4E9A52;
-  --git-added:     #4E9A52;
-  --git-deleted:   #C0492F;
-
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, monospace;
-  --radius: 4px;
+  --radius: 6px;         /* controls */
+  --r-card: 14px;        /* floating glass panels */
+  --blur: saturate(180%) blur(30px);
+  --ease: 200ms cubic-bezier(.32,.72,0,1);
+}
+
+/* ── Light theme ─────────────────────────────────────── */
+html[data-theme="light"] {
+  --bg-base:      #dde4f2;   /* base the gradient mesh sits on */
+  --bg:           #eef2fb;   /* SOLID editor / terminal / preview panes */
+  --sidebar-bg:   rgba(255,255,255,.42);
+  --panel-bg:     rgba(255,255,255,.55);
+  --glass:        rgba(255,255,255,.42);
+  --glass-2:      rgba(255,255,255,.58);
+  --glass-hover:  rgba(255,255,255,.74);
+  --glass-active: rgba(255,255,255,.92);
+  --border:       rgba(90,105,140,.22);
+  --border-soft:  rgba(255,255,255,.6);
+  --sheen:        linear-gradient(150deg, rgba(255,255,255,.6), rgba(255,255,255,.06) 46%, rgba(255,255,255,0) 62%);
+  --inner-hl:     inset 0 1px 0 rgba(255,255,255,.9), inset 0 0 0 1px rgba(255,255,255,.28);
+
+  --text:         #1b2333;
+  --text-dim:     #54607a;
+  --text-xs:      #8a93aa;
+  --hover:        rgba(255,255,255,.5);
+  --active:       rgba(255,255,255,.82);
+  --accent:       #0071e3;
+  --accent-2:     #6e56cf;
+  --accent-light: rgba(0,113,227,.12);
+
+  --added:        #2f8a46;
+  --modified:     #b5771a;
+  --deleted:      #c0492f;
+  --untracked:    #2f77a8;
+  --git-modified:  #b5771a;
+  --git-untracked: #2f8a46;
+  --git-added:     #2f8a46;
+  --git-deleted:   #c0492f;
+
+  --statusbar-bg: rgba(255,255,255,.5);
+  --statusbar-fg: #2a3348;
+  --statusbar-dim:#7c869e;
+
+  --shadow-sm:    0 1px 2px rgba(20,25,45,.10);
+  --shadow:       0 10px 34px rgba(30,38,66,.14), 0 2px 8px rgba(30,38,66,.08);
+  --shadow-lg:    0 24px 70px rgba(30,38,66,.20), 0 6px 18px rgba(30,38,66,.10);
+
+  --track:        rgba(60,70,100,.18);
+}
+
+/* ── Dark theme ──────────────────────────────────────── */
+html[data-theme="dark"] {
+  --bg-base:      #080a12;
+  --bg:           #12151f;   /* SOLID editor / terminal / preview panes */
+  --sidebar-bg:   rgba(30,34,48,.5);
+  --panel-bg:     rgba(42,47,63,.62);
+  --glass:        rgba(34,38,52,.5);
+  --glass-2:      rgba(50,56,74,.58);
+  --glass-hover:  rgba(70,78,100,.66);
+  --glass-active: rgba(88,97,122,.78);
+  --border:       rgba(255,255,255,.1);
+  --border-soft:  rgba(255,255,255,.13);
+  --sheen:        linear-gradient(150deg, rgba(255,255,255,.13), rgba(255,255,255,.02) 46%, rgba(255,255,255,0) 62%);
+  --inner-hl:     inset 0 1px 0 rgba(255,255,255,.16), inset 0 0 0 1px rgba(255,255,255,.04);
+
+  --text:         #eef1f8;
+  --text-dim:     #9aa4bd;
+  --text-xs:      #6c7690;
+  --hover:        rgba(255,255,255,.07);
+  --active:       rgba(255,255,255,.12);
+  --accent:       #4a9bff;
+  --accent-2:     #a78bfa;
+  --accent-light: rgba(74,155,255,.18);
+
+  --added:        #57b96b;
+  --modified:     #d9a13a;
+  --deleted:      #e0685a;
+  --untracked:    #58a6ff;
+  --git-modified:  #d9a13a;
+  --git-untracked: #57b96b;
+  --git-added:     #57b96b;
+  --git-deleted:   #e0685a;
+
+  --statusbar-bg: rgba(22,26,38,.58);
+  --statusbar-fg: #c3ccdf;
+  --statusbar-dim:#7e879e;
+
+  --shadow-sm:    0 1px 2px rgba(0,0,0,.4);
+  --shadow:       0 12px 40px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.4);
+  --shadow-lg:    0 24px 70px rgba(0,0,0,.62), 0 6px 18px rgba(0,0,0,.45);
+
+  --track:        rgba(255,255,255,.18);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
   height: 100%;
-  background: var(--bg);
+  background: var(--bg-base);
   color: var(--text);
   font-family: var(--font);
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
 }
+
+/* Vibrant animated gradient mesh that the glass panels blur over */
+body::before {
+  content: "";
+  position: fixed; inset: -20%;
+  z-index: -1;
+  background:
+    radial-gradient(42% 46% at 18% 20%, rgba(70,140,255,.72), transparent 70%),
+    radial-gradient(40% 44% at 82% 12%, rgba(150,110,255,.60), transparent 70%),
+    radial-gradient(46% 50% at 68% 82%, rgba(50,200,235,.55), transparent 70%),
+    radial-gradient(44% 48% at 12% 88%, rgba(110,100,255,.55), transparent 72%);
+  filter: blur(30px);
+  animation: drift 26s ease-in-out infinite alternate;
+}
+html[data-theme="dark"] body::before {
+  background:
+    radial-gradient(42% 46% at 18% 20%, rgba(50,100,230,.34), transparent 70%),
+    radial-gradient(40% 44% at 82% 12%, rgba(150,70,220,.30), transparent 70%),
+    radial-gradient(46% 50% at 68% 82%, rgba(30,140,200,.30), transparent 70%),
+    radial-gradient(44% 48% at 12% 88%, rgba(90,70,210,.30), transparent 72%);
+}
+@keyframes drift {
+  from { transform: translate3d(0,0,0) scale(1); }
+  to   { transform: translate3d(0,-2.5%,0) scale(1.06); }
+}
+@media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+
+::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-xs) 45%, transparent);
+  border-radius: 10px; border: 3px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text-xs) 70%, transparent); background-clip: padding-box; }
 
 /* ── Layout ───────────────────────────────────────── */
 
 #app {
   display: flex;
   height: calc(100vh - 26px);
+  padding: 9px;
+  gap: 0;
 }
 
-/* ── Sidebar ──────────────────────────────────────── */
+/* ── Sidebar (glass card) ─────────────────────────── */
 
 #sidebar {
   width: 260px;
   min-width: 180px;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border);
+  background: var(--sheen), var(--sidebar-bg);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow), var(--inner-hl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 #sidebar-resizer {
-  width: 5px;
+  width: 6px;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
   transition: background 0.12s;
-  margin: 0 -2px;
+  margin: 0 2px;
   z-index: 5;
+  border-radius: 4px;
 }
-#sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
+#sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent-light); }
 
 #tab-bar {
   display: flex;
@@ -85,7 +201,7 @@ html, body {
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--text-dim);
-  padding: 8px 10px 6px;
+  padding: 10px 10px 8px;
   font-family: var(--font);
   font-size: 10.5px;
   font-weight: 600;
@@ -137,23 +253,25 @@ html, body {
 /* ── Search ───────────────────────────────────────── */
 
 #search-box {
-  padding: 7px 8px;
+  padding: 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 #file-search {
   width: 100%;
-  background: rgba(255,255,255,0.7);
-  border: 1px solid var(--border);
+  background: var(--glass-2);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-soft);
   color: var(--text);
-  padding: 5px 9px;
+  padding: 6px 10px;
   font-family: var(--font);
   font-size: 12px;
-  border-radius: var(--radius);
+  border-radius: 999px;
   outline: none;
+  transition: border-color var(--ease), background var(--ease), box-shadow var(--ease);
 }
 #file-search::placeholder { color: var(--text-xs); }
-#file-search:focus { border-color: var(--accent); background: #fff; }
+#file-search:focus { border-color: var(--accent); background: var(--glass-hover); box-shadow: 0 0 0 3px var(--accent-light); }
 
 #show-ignored-label {
   display: flex;
@@ -168,13 +286,14 @@ html, body {
   margin-top: auto;
   flex-shrink: 0;
 }
+#show-ignored-label input { accent-color: var(--accent); }
 
 /* ── File tree ────────────────────────────────────── */
 
 #tree-container, #search-results {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 4px 6px;
 }
 
 .tree-row {
@@ -185,8 +304,9 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  border-radius: 0;
-  height: 22px;
+  border-radius: var(--radius);
+  height: 23px;
+  transition: background var(--ease);
 }
 .tree-row:hover { background: var(--hover); }
 .tree-row.selected { background: var(--active); }
@@ -270,7 +390,7 @@ html, body {
   background: var(--accent-light);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-#tree-container.root-drop { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 4px; }
+#tree-container.root-drop { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 8px; }
 
 .tree-name .dir {
   color: var(--text-xs);
@@ -312,7 +432,7 @@ html, body {
 .section-title:hover { background: var(--hover); }
 .section-title .count {
   margin-left: auto;
-  background: var(--active);
+  background: var(--glass-2);
   border-radius: 10px;
   padding: 0 6px;
   font-size: 10px;
@@ -333,6 +453,7 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
   height: 24px;
+  transition: background var(--ease);
 }
 .file-row:hover { background: var(--hover); }
 .file-row.selected { background: var(--active); }
@@ -368,9 +489,9 @@ html, body {
 .file-action {
   display: none;
   border: none;
-  background: var(--hover);
+  background: var(--glass-2);
   color: var(--text-dim);
-  border-radius: 3px;
+  border-radius: 5px;
   width: 18px;
   height: 18px;
   line-height: 18px;
@@ -382,22 +503,27 @@ html, body {
 }
 .file-row:hover .file-action { display: flex; align-items: center; justify-content: center; }
 .file-row:hover .status-badge { display: none; }
-.file-action:hover { background: var(--active); color: var(--text); }
+.file-action:hover { background: var(--glass-active); color: var(--text); }
 
-/* ── Main editor ──────────────────────────────────── */
+/* ── Main editor (rounded card; header is glass, editor pane is solid) ── */
 
 #main {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow), var(--inner-hl);
+  overflow: hidden;
 }
 
 #editor-header {
-  height: 38px;
+  height: 40px;
   border-bottom: 1px solid var(--border);
-  background: var(--sidebar-bg);
+  background: var(--sheen), var(--glass);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   display: flex;
   align-items: stretch;
   flex-shrink: 0;
@@ -425,17 +551,18 @@ html, body {
   max-width: 220px;
   min-width: 110px;
   border-right: 1px solid var(--border);
-  background: var(--sidebar-bg);
+  background: transparent;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12.5px;
   white-space: nowrap;
   flex-shrink: 0;
   position: relative;
+  transition: background var(--ease), color var(--ease);
 }
 .tab:hover { background: var(--hover); }
 .tab.active {
-  background: var(--bg);
+  background: var(--glass-active);
   color: var(--text);
   box-shadow: inset 0 2px 0 var(--accent);
 }
@@ -449,7 +576,7 @@ html, body {
   border: none;
   background: none;
   color: var(--text-dim);
-  border-radius: 3px;
+  border-radius: 50%;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
@@ -470,7 +597,7 @@ html, body {
   gap: 12px;
   padding: 0 14px;
   border-left: 1px solid var(--border);
-  background: var(--panel-bg);
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -485,8 +612,8 @@ html, body {
 }
 #font-size-label > span { font-weight: 600; font-size: 12px; }
 #font-size-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--glass-2);
+  border: 1px solid var(--border-soft);
   color: var(--text);
   border-radius: var(--radius);
   padding: 2px 4px;
@@ -498,26 +625,28 @@ html, body {
 #font-size-select:focus { border-color: var(--accent); }
 
 #save-btn {
-  background: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent));
   color: #fff;
   border: none;
-  border-radius: var(--radius);
-  padding: 4px 14px;
+  border-radius: 999px;
+  padding: 5px 16px;
   font-size: 12px;
   font-family: var(--font);
   cursor: pointer;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,.35);
 }
-#save-btn:hover { opacity: 0.85; }
+#save-btn:hover { filter: brightness(1.05); }
 #readonly-note { font-style: italic; color: var(--text-xs); font-family: var(--font); font-size: 11px; }
 
 /* Toolbar buttons (reload, preview) */
 .tool-btn {
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--glass-2);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-soft);
   color: var(--text-dim);
-  border-radius: var(--radius);
-  padding: 3px 10px;
+  border-radius: 999px;
+  padding: 4px 12px;
   font-size: 11.5px;
   font-family: var(--font);
   cursor: pointer;
@@ -525,22 +654,23 @@ html, body {
   align-items: center;
   justify-content: center;
   line-height: 1.4;
+  transition: color var(--ease), border-color var(--ease), background var(--ease);
 }
-.tool-btn:hover { color: var(--text); border-color: var(--text-dim); }
-.tool-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-#reload-btn { font-size: 15px; padding: 2px 8px; }
+.tool-btn:hover { color: var(--text); background: var(--glass-hover); border-color: var(--border); }
+.tool-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+#reload-btn { font-size: 15px; padding: 2px 9px; }
 #reload-btn.spin svg, #reload-btn.spin { animation: spin 0.4s ease; }
 @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
-#diff-editor-container, #plain-editor-container { flex: 1; min-height: 0; }
+/* Editor + terminal panes are SOLID for readability */
+#diff-editor-container, #plain-editor-container { flex: 1; min-height: 0; background: var(--bg); }
 
 /* Terminal */
 #terminal-container { flex: 1; min-height: 0; background: var(--bg); position: relative; }
 .term-instance { width: 100%; height: 100%; padding: 6px 4px 6px 8px; }
 .term-instance .xterm { height: 100%; }
 /* xterm v6 ships .xterm-viewport { background-color: #000 } as a default; the
-   strip below the last rendered row peeks through as a black line. Match it to
-   the terminal theme background. */
+   strip below the last rendered row peeks through. Match it to the pane bg. */
 .term-instance .xterm-viewport { background-color: var(--bg) !important; }
 
 /* Dirty-diff gutter bars (changed lines vs HEAD) — wide + full-height click target */
@@ -630,18 +760,19 @@ html, body {
 #preview-content code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: var(--sidebar-bg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  background: var(--glass-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
   padding: 0.1em 0.4em;
 }
 #preview-content pre {
-  background: var(--sidebar-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--glass-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
   padding: 14px 16px;
   overflow-x: auto;
   margin: 1em 0;
+  box-shadow: var(--shadow-sm);
 }
 #preview-content pre code { background: none; border: none; padding: 0; font-size: 0.85em; }
 #preview-content table {
@@ -655,16 +786,16 @@ html, body {
   padding: 6px 12px;
   text-align: left;
 }
-#preview-content th { background: var(--sidebar-bg); font-weight: 600; }
-#preview-content img { max-width: 100%; }
+#preview-content th { background: var(--glass-2); font-weight: 600; }
+#preview-content img { max-width: 100%; border-radius: 8px; }
 #preview-content hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
 #preview-content .mermaid {
   display: flex;
   justify-content: center;
   margin: 1.2em 0;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--glass-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
   padding: 16px;
 }
 #preview-content .mermaid svg { max-width: 100%; height: auto; }
@@ -679,6 +810,7 @@ html, body {
   font-size: 13px;
   padding: 20px;
   text-align: center;
+  background: var(--bg);
 }
 
 #empty-state {
@@ -691,18 +823,21 @@ html, body {
   gap: 10px;
   user-select: none;
 }
-#empty-icon { font-size: 32px; opacity: 0.25; }
+#empty-icon { font-size: 32px; opacity: 0.35; }
 #empty-state p { font-size: 12.5px; }
 
-/* ── Status bar ───────────────────────────────────── */
+/* ── Status bar (glass, full-width, floats over the gradient) ── */
 
 #statusbar {
   position: fixed;
   bottom: 0;
   left: 0; right: 0;
   height: 26px;
-  background: var(--statusbar-bg);
+  background: var(--sheen), var(--statusbar-bg);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
   color: var(--statusbar-fg);
+  border-top: 1px solid var(--border-soft);
+  box-shadow: var(--inner-hl);
   display: flex;
   align-items: center;
   padding: 0;
@@ -716,7 +851,7 @@ html, body {
 .sb-spacer { flex: 1; }
 
 .sb-profile {
-  background: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent));
   color: #fff;
   border: none;
   cursor: pointer;
@@ -728,13 +863,13 @@ html, body {
   padding: 0 12px;
   letter-spacing: 0.01em;
 }
-.sb-profile:hover { opacity: 0.88; }
+.sb-profile:hover { filter: brightness(1.06); }
 
 .sb-branch { color: var(--statusbar-fg); font-size: 11.5px; }
 .sb-path { color: var(--statusbar-dim); overflow: hidden; text-overflow: ellipsis; max-width: 280px; font-size: 11px; font-family: var(--font-mono); }
 .sb-conn { color: var(--statusbar-dim); font-size: 11px; }
-.sb-conn.error { color: #D07868; }
-.sb-conn.ok { color: #7AB880; }
+.sb-conn.error { color: var(--deleted); }
+.sb-conn.ok { color: var(--added); }
 
 .sb-btn {
   background: none;
@@ -746,14 +881,15 @@ html, body {
   height: 100%;
   padding: 0 10px;
 }
-.sb-btn:hover { background: rgba(255,255,255,0.1); }
+.sb-btn:hover { background: var(--hover); }
 
-/* ── Profiles overlay ─────────────────────────────── */
+/* ── Profiles overlay (glass panel) ───────────────── */
 
 #profiles-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.2);
+  background: color-mix(in srgb, var(--bg-base) 45%, transparent);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   z-index: 200;
   display: flex;
   align-items: flex-end;
@@ -761,16 +897,18 @@ html, body {
 }
 
 #profiles-panel {
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
+  background: var(--sheen), var(--panel-bg);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-soft);
   border-bottom: none;
-  border-radius: 8px 8px 0 0;
+  border-radius: 16px 16px 0 0;
   width: 380px;
   max-height: 72vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 -6px 32px rgba(0,0,0,0.1);
+  box-shadow: var(--shadow-lg), var(--inner-hl);
   overflow: hidden;
+  margin: 0 0 0 9px;
 }
 
 .pp-header {
@@ -818,7 +956,7 @@ html, body {
   display: none; line-height: 1;
 }
 .pp-item:hover .pp-del { display: block; }
-.pp-del:hover { color: var(--deleted); background: rgba(176,64,48,0.08); }
+.pp-del:hover { color: var(--deleted); background: color-mix(in srgb, var(--deleted) 12%, transparent); }
 
 #pp-form-wrap {
   padding: 14px 16px 18px;
@@ -833,10 +971,10 @@ html, body {
   cursor: pointer;
   font-size: 12px;
   font-family: var(--font);
-  padding: 7px 14px;
-  border-radius: var(--radius);
+  padding: 8px 14px;
+  border-radius: 999px;
   width: 100%;
-  transition: border-color 0.15s, color 0.15s;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 #pp-new-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
 
@@ -854,10 +992,10 @@ html, body {
   margin-bottom: 10px;
 }
 .pf-field input {
-  background: #fff;
-  border: 1px solid var(--border);
+  background: var(--glass-2);
+  border: 1px solid var(--border-soft);
   color: var(--text);
-  padding: 7px 10px;
+  padding: 8px 10px;
   font-size: 12.5px;
   font-family: var(--font);
   border-radius: var(--radius);
@@ -866,7 +1004,7 @@ html, body {
   letter-spacing: 0;
   text-transform: none;
 }
-.pf-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
+.pf-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
 
 .pf-actions {
   display: flex;
@@ -875,28 +1013,31 @@ html, body {
   margin-top: 6px;
 }
 .pf-actions button {
-  border: none; border-radius: var(--radius);
-  padding: 7px 18px; font-size: 12.5px;
-  font-family: var(--font); font-weight: 500;
+  border: none; border-radius: 999px;
+  padding: 8px 18px; font-size: 12.5px;
+  font-family: var(--font); font-weight: 600;
   cursor: pointer;
 }
-#pf-cancel { background: var(--hover); color: var(--text); }
-#pf-cancel:hover { background: var(--active); }
-#pf-save { background: var(--accent); color: #fff; }
-#pf-save:hover { opacity: 0.85; }
+#pf-cancel { background: var(--glass-2); color: var(--text); border: 1px solid var(--border-soft); }
+#pf-cancel:hover { background: var(--glass-hover); }
+#pf-save { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent)); color: #fff; }
+#pf-save:hover { filter: brightness(1.05); }
 
-/* ── Toasts ───────────────────────────────────────── */
+/* ── Toasts (glass) ───────────────────────────────── */
 
 .toast {
   position: fixed;
-  bottom: 38px;
+  bottom: 40px;
   right: 16px;
-  background: var(--text);
-  color: var(--bg);
-  padding: 9px 16px;
-  border-radius: 6px;
+  background: var(--sheen), var(--glass-active);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+  padding: 10px 18px;
+  border-radius: 999px;
   font-size: 12.5px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  font-weight: 550;
+  box-shadow: var(--shadow-lg);
   opacity: 0;
   transform: translateY(6px);
   transition: opacity 0.2s, transform 0.2s;
@@ -904,8 +1045,11 @@ html, body {
   max-width: 320px;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
-.toast-error { background: #7A2020; color: #fff; }
-.toast-success { background: #2F5A2F; color: #fff; }
+.toast-error { border-color: color-mix(in srgb, var(--deleted) 50%, transparent); color: var(--deleted); }
+.toast-success { border-color: color-mix(in srgb, var(--added) 50%, transparent); color: var(--added); }
 
 /* ── Profile panel empty ──────────────────────────── */
 .pp-empty { padding: 12px 16px; color: var(--text-xs); font-size: 12px; }
+
+/* ── Theme toggle button (status bar) ─────────────── */
+#theme-btn { font-size: 13px; }

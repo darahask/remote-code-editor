@@ -4,8 +4,18 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Git Remote Viewer</title>
+<!-- Set the theme before any CSS paints to avoid a flash of the wrong theme -->
+<script>
+  (function () {
+    var t = localStorage.getItem('grv-theme');
+    if (t !== 'light' && t !== 'dark') {
+      t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
-<link rel="stylesheet" href="style.css?v=4" />
+<link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
 
@@ -123,6 +133,7 @@
   <span class="sb-item sb-path" id="sb-path" title="">—</span>
   <span class="sb-spacer"></span>
   <button id="new-terminal-btn" class="sb-item sb-btn" title="New Terminal (Ctrl+`)">&#9646; Terminal</button>
+  <button id="theme-btn" class="sb-item sb-btn" title="Toggle light / dark theme" aria-label="Toggle theme">☾</button>
   <span id="sb-status" class="sb-item sb-conn"></span>
 </div>
 
@@ -157,6 +168,6 @@
 <script src="/vendor/xterm/lib/xterm.js"></script>
 <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

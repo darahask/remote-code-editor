@@ -46,23 +46,75 @@ function getTab(id) { return tabs.find(t => t.id === id); }
 function activeTab() { return getTab(activeTabId); }
 
 // ---------------------------------------------------------------------------
+// Theme (light / dark liquid glass)
+// ---------------------------------------------------------------------------
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+function monacoThemeFor(theme) { return theme === 'dark' ? 'glass-dark' : 'glass-light'; }
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('grv-theme', theme);
+
+  // Monaco (once loaded)
+  if (window.monaco && monaco.editor) monaco.editor.setTheme(monacoThemeFor(theme));
+
+  // Re-theme any open terminals live
+  const tt = TERM_THEMES[theme] || TERM_THEMES.light;
+  tabs.forEach(t => { if (t.kind === 'terminal' && t.term) { try { t.term.options.theme = tt; } catch (_) {} } });
+
+  // Mermaid — affects diagrams rendered after this point
+  if (window.mermaid) {
+    try { mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'neutral', securityLevel: 'loose' }); } catch (_) {}
+  }
+
+  // Button shows the mode you'd switch TO
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = theme === 'dark' ? '☀' : '☾';
+}
+
+function toggleTheme() { applyTheme(currentTheme() === 'dark' ? 'light' : 'dark'); }
+
+(function initThemeToggle() {
+  const btn = document.getElementById('theme-btn');
+  if (!btn) return;
+  btn.textContent = currentTheme() === 'dark' ? '☀' : '☾';
+  btn.addEventListener('click', toggleTheme);
+})();
+
+// ---------------------------------------------------------------------------
 // Monaco
 // ---------------------------------------------------------------------------
 
 require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
 require(['vs/editor/editor.main'], () => {
-  monaco.editor.defineTheme('warm-light', {
+  monaco.editor.defineTheme('glass-light', {
     base: 'vs', inherit: true, rules: [],
     colors: {
-      'editor.background': '#F6F3EE',
-      'editor.lineHighlightBackground': '#EDE8DF',
-      'editorLineNumber.foreground': '#B0A898',
-      'editorLineNumber.activeForeground': '#7A6E62',
-      'diffEditor.insertedTextBackground': '#D0E8D080',
-      'diffEditor.removedTextBackground': '#ECCCC880',
+      'editor.background': '#eef2fb',
+      'editor.lineHighlightBackground': '#e3e9f7',
+      'editorLineNumber.foreground': '#a7b0c6',
+      'editorLineNumber.activeForeground': '#54607a',
+      'editorGutter.background': '#eef2fb',
+      'diffEditor.insertedTextBackground': '#bfe8c840',
+      'diffEditor.removedTextBackground': '#efc8c440',
     },
   });
-  monaco.editor.setTheme('warm-light');
+  monaco.editor.defineTheme('glass-dark', {
+    base: 'vs-dark', inherit: true, rules: [],
+    colors: {
+      'editor.background': '#12151f',
+      'editor.lineHighlightBackground': '#1b1f2c',
+      'editorLineNumber.foreground': '#495066',
+      'editorLineNumber.activeForeground': '#9aa4bd',
+      'editorGutter.background': '#12151f',
+      'diffEditor.insertedTextBackground': '#3fb95030',
+      'diffEditor.removedTextBackground': '#e0685a30',
+    },
+  });
+  monaco.editor.setTheme(monacoThemeFor(currentTheme()));
 
   const fontSize = getFontSize();
 
@@ -106,7 +158,7 @@ require(['vs/editor/editor.main'], () => {
 
 // Markdown + mermaid setup (globals from CDN scripts)
 if (window.mermaid) {
-  mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+  mermaid.initialize({ startOnLoad: false, theme: currentTheme() === 'dark' ? 'dark' : 'neutral', securityLevel: 'loose' });
 }
 if (window.marked) {
   marked.setOptions({ gfm: true, breaks: false });
@@ -1024,14 +1076,25 @@ function opsToDecorations(ops) {
 
 let termCounter = 0;
 
-const TERM_THEME = {
-  background: '#F6F3EE', foreground: '#2E2A24',
-  cursor: '#9B6E2E', cursorAccent: '#F6F3EE', selectionBackground: '#D8D2C4',
-  black: '#2E2A24', red: '#B04030', green: '#3D7A3D', yellow: '#8F6A20',
-  blue: '#3A6E8F', magenta: '#8A5A8A', cyan: '#3A8A8A', white: '#C8C0B4',
-  brightBlack: '#7A7060', brightRed: '#C05040', brightGreen: '#4D8A4D', brightYellow: '#9F7A30',
-  brightBlue: '#4A7E9F', brightMagenta: '#9A6A9A', brightCyan: '#4A9A9A', brightWhite: '#2E2A24',
+const TERM_THEMES = {
+  light: {
+    background: '#eef2fb', foreground: '#1b2333',
+    cursor: '#0071e3', cursorAccent: '#eef2fb', selectionBackground: '#cfe0f7',
+    black: '#1b2333', red: '#c0492f', green: '#2f8a46', yellow: '#b5771a',
+    blue: '#0071e3', magenta: '#6e56cf', cyan: '#2f8a9e', white: '#c3ccdf',
+    brightBlack: '#54607a', brightRed: '#d0604a', brightGreen: '#3fa159', brightYellow: '#c98a26',
+    brightBlue: '#3a8bff', brightMagenta: '#8a72e0', brightCyan: '#3aa1b5', brightWhite: '#1b2333',
+  },
+  dark: {
+    background: '#12151f', foreground: '#eef1f8',
+    cursor: '#4a9bff', cursorAccent: '#12151f', selectionBackground: '#2c3550',
+    black: '#20242f', red: '#e0685a', green: '#57b96b', yellow: '#d9a13a',
+    blue: '#4a9bff', magenta: '#a78bfa', cyan: '#4fc4d6', white: '#c3ccdf',
+    brightBlack: '#6c7690', brightRed: '#ec8072', brightGreen: '#70ca82', brightYellow: '#e8b45a',
+    brightBlue: '#6fb0ff', brightMagenta: '#bda3ff', brightCyan: '#6fd6e6', brightWhite: '#eef1f8',
+  },
 };
+const termTheme = () => TERM_THEMES[currentTheme()] || TERM_THEMES.light;
 const TERM_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace';
 
 function newTerminal() {
@@ -1048,7 +1111,7 @@ function newTerminal() {
   const term = new Terminal({
     fontSize: getFontSize(),
     fontFamily: TERM_FONT,
-    theme: TERM_THEME,
+    theme: termTheme(),
     cursorBlink: true,
     scrollback: 8000,
   });
