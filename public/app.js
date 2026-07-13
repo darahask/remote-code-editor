@@ -214,6 +214,7 @@ async function init() {
   loadTree();
   loadStatus();
   restoreTabs();          // recreate saved tabs (terminals re-attach via tmux)
+  startHeartbeat();       // keep the connection label live from here on
 }
 
 // Each terminal is restored under its own bound profile (not just the active
@@ -307,6 +308,29 @@ function setStatus(msg, kind = '') {
   const el = document.getElementById('sb-status');
   el.textContent = msg;
   el.className = 'sb-item sb-conn' + (kind ? ' ' + kind : '');
+}
+
+// Live connection heartbeat: keep the status label honest by probing the
+// remote every HEARTBEAT_MS instead of only on sidebar refresh, so a dropped
+// connection shows within ~one interval rather than staying stale "Connected".
+const HEARTBEAT_MS = 25000;
+let _heartbeatTimer = null;
+
+async function checkConnection() {
+  if (!profileState.active) return;   // nothing to probe
+  if (document.hidden) return;        // don't spend SSH pings while the tab is hidden
+  try {
+    const res = await fetchWithTimeout('/api/ping', {}, 8000);
+    const data = await res.json().catch(() => ({ ok: false }));
+    setStatus(data.ok ? 'Connected' : 'Disconnected', data.ok ? 'ok' : 'error');
+  } catch (_) {
+    setStatus('Disconnected', 'error');
+  }
+}
+
+function startHeartbeat() {
+  if (_heartbeatTimer) return;
+  _heartbeatTimer = setInterval(checkConnection, HEARTBEAT_MS);
 }
 
 function updateStatusBar() {
@@ -1710,8 +1734,10 @@ function reconnectAllTerminals() {
   }
 }
 
-window.addEventListener('online', () => { flushPendingKills(); reconnectAllTerminals(); loadStatus(); loadTree(); });
+window.addEventListener('online', () => { flushPendingKills(); reconnectAllTerminals(); loadStatus(); loadTree(); checkConnection(); });
 window.addEventListener('focus', () => { reconnectAllTerminals(); });
+// Give an immediate fresh reading when the user returns to a previously-hidden tab.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkConnection(); });
 
 // Resizable sidebar (helps with deep folder trees)
 (function setupSidebarResize() {
