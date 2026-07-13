@@ -469,8 +469,8 @@ app.delete('/api/term-session', (req, res) => {
 
   const name = tmuxSessionName(sessionId);
   const proc = spawn('ssh', [...sshArgs(profile), `tmux kill-session -t ${name} 2>/dev/null || true`]);
-  proc.on('close', () => res.json({ ok: true }));
-  proc.on('error', () => res.json({ ok: true }));   // best-effort cleanup
+  proc.on('close', () => { if (!res.headersSent) res.json({ ok: true }); });
+  proc.on('error', () => { if (!res.headersSent) res.json({ ok: true }); });   // best-effort cleanup
 });
 
 // List live grv_* tmux sessions on the remote so the client can reconcile tabs.
@@ -482,13 +482,14 @@ app.get('/api/term-sessions', (req, res) => {
   let out = '';
   proc.stdout.on('data', d => { out += d.toString(); });
   proc.on('close', () => {
+    if (res.headersSent) return;
     const sessions = out.split('\n')
       .map(s => s.trim())
       .filter(s => s.startsWith('grv_'))
       .map(s => s.slice('grv_'.length));
     res.json({ sessions });
   });
-  proc.on('error', () => res.json({ sessions: [] }));
+  proc.on('error', () => { if (!res.headersSent) res.json({ sessions: [] }); });
 });
 
 // ---------------------------------------------------------------------------
