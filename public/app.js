@@ -209,6 +209,7 @@ function fetchWithTimeout(url, opts = {}, ms = 8000) {
 }
 
 async function init() {
+  flushPendingKills();     // retry any session kills queued from a prior session
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
   loadTree();
   loadStatus();
@@ -663,19 +664,23 @@ function downloadDir(p) {
 async function uploadPath(body, rel, overwrite) {
   let url = `/api/upload?path=${encodeURIComponent(rel)}`;
   if (overwrite) url += '&overwrite=1';
-  const res = await fetch(url, { method: 'POST', body });
-  if (res.status === 409) return { conflict: true };
-  if (!res.ok) {
-    let msg = 'Upload failed';
-    try { msg = (await res.json()).error || msg; } catch (_) {}
-    return { error: msg };
+  try {
+    const res = await fetchWithTimeout(url, { method: 'POST', body }, 300000);
+    if (res.status === 409) return { conflict: true };
+    if (!res.ok) {
+      let msg = 'Upload failed';
+      try { msg = (await res.json()).error || msg; } catch (_) {}
+      return { error: msg };
+    }
+    return { ok: true };
+  } catch (_) {
+    return { error: 'Upload timed out or failed' };
   }
-  return { ok: true };
 }
 
 async function checkExists(rel) {
   try {
-    const res = await fetch(`/api/exists?path=${encodeURIComponent(rel)}`);
+    const res = await fetchWithTimeout(`/api/exists?path=${encodeURIComponent(rel)}`);
     return res.ok ? (await res.json()).exists : false;
   } catch (_) { return false; }
 }
@@ -1303,6 +1308,44 @@ function fitActiveTerminal() {
 // Tab manager
 // ---------------------------------------------------------------------------
 
+const PENDING_KILL_KEY = 'grv-pending-kill';
+
+function loadPendingKills() {
+  try { const v = JSON.parse(localStorage.getItem(PENDING_KILL_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+  catch (_) { return []; }
+}
+function savePendingKills(list) {
+  try { localStorage.setItem(PENDING_KILL_KEY, JSON.stringify(list)); } catch (_) {}
+}
+
+// Queue a remote tmux session for deletion (deduped by sessionId).
+function queueSessionKill(profileName, sessionId) {
+  if (!sessionId) return;
+  const list = loadPendingKills();
+  if (!list.some(e => e.sessionId === sessionId)) {
+    list.push({ profileName: profileName || '', sessionId });
+    savePendingKills(list);
+  }
+}
+
+// Retry all queued kills; drop each one that the server confirms (HTTP ok).
+// The DELETE is idempotent server-side (kill-session on a gone session -> ok).
+async function flushPendingKills() {
+  const list = loadPendingKills();
+  if (list.length === 0) return;
+  const survivors = [];
+  await Promise.all(list.map(async (e) => {
+    try {
+      const res = await fetchWithTimeout(
+        `/api/term-session?profile=${encodeURIComponent(e.profileName)}&session=${encodeURIComponent(e.sessionId)}`,
+        { method: 'DELETE' }, 5000,
+      );
+      if (!res.ok) survivors.push(e);          // keep for a later retry
+    } catch (_) { survivors.push(e); }         // network/abort -> keep and retry later
+  }));
+  savePendingKills(survivors);
+}
+
 let _persistTimer = null;
 function persistTabs() {
   clearTimeout(_persistTimer);
@@ -1463,15 +1506,10 @@ function closeTab(id) {
   tab.model = tab.origModel = tab.modModel = null;   // avoid double-dispose (I1)
   if (tab.kind === 'terminal') {
     clearTimeout(tab.reconnectTimer);
-    // Best-effort: kill the remote tmux session so it doesn't linger.
-    if (tab.sessionId) {
-      try {
-        fetchWithTimeout(
-          `/api/term-session?profile=${encodeURIComponent(tab.profileName || '')}&session=${encodeURIComponent(tab.sessionId)}`,
-          { method: 'DELETE' }, 5000,
-        ).catch(() => {});
-      } catch (_) {}
-    }
+    // Queue the remote tmux session kill and retry until confirmed, so a
+    // momentarily-down SSH connection doesn't leave the session orphaned.
+    queueSessionKill(tab.profileName, tab.sessionId);
+    flushPendingKills();
     // Detach WS handlers BEFORE closing/disposing so a late onclose/onerror/
     // onmessage/onopen can't call term.write() on a disposed xterm (C4).
     if (tab.ws) { tab.ws.onopen = tab.ws.onmessage = tab.ws.onclose = tab.ws.onerror = null; }
@@ -1666,7 +1704,7 @@ function reconnectAllTerminals() {
   }
 }
 
-window.addEventListener('online', () => { reconnectAllTerminals(); loadStatus(); loadTree(); });
+window.addEventListener('online', () => { flushPendingKills(); reconnectAllTerminals(); loadStatus(); loadTree(); });
 window.addEventListener('focus', () => { reconnectAllTerminals(); });
 
 // Resizable sidebar (helps with deep folder trees)
