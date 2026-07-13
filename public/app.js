@@ -212,6 +212,56 @@ async function init() {
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
   loadTree();
   loadStatus();
+  restoreTabs();          // recreate saved tabs (terminals re-attach via tmux)
+}
+
+// Each terminal is restored under its own bound profile (not just the active
+// one), so a terminal survives even if the user had switched profiles before
+// closing the browser. The active profile itself needs no client restore —
+// the server persists it in profiles.json (_active) and loadProfiles() already
+// re-selects it on load.
+async function restoreTabs() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('grv-tabs') || 'null'); } catch (_) { saved = null; }
+  if (!saved || !Array.isArray(saved.tabs) || saved.tabs.length === 0) return;
+
+  const savedTerminals = saved.tabs.filter(t => t.kind === 'terminal');
+  const savedFiles = saved.tabs.filter(t => t.kind === 'explorer');
+
+  // A falsy profileName means "let the server pick the active profile" — treat
+  // it as existing. A named profile must still be present on this server.
+  const profileExists = (name) => !name || (name in (profileState.profiles || {}));
+
+  // List live tmux sessions on each bound profile that still exists. Session
+  // ids are globally unique, so one combined set across profiles is enough.
+  // Record which profiles we actually queried, so terminals on a profile we
+  // could NOT reach are recreated optimistically (attach-or-create) rather than
+  // dropped, while terminals confirmed dead on a reachable profile are dropped.
+  const profilesToCheck = [...new Set(savedTerminals.map(t => t.profileName).filter(Boolean))]
+    .filter(profileExists);
+  const liveIds = new Set();
+  const queried = new Set();
+  await Promise.all(profilesToCheck.map(async (name) => {
+    try {
+      const res = await fetchWithTimeout(`/api/term-sessions?profile=${encodeURIComponent(name)}`);
+      const data = await res.json();
+      (Array.isArray(data.sessions) ? data.sessions : []).forEach(id => liveIds.add(id));
+      queried.add(name);
+    } catch (_) { /* unreachable profile -> optimistic recreate below */ }
+  }));
+
+  // Keep = confirmed-live sessions PLUS terminals on profiles we couldn't verify.
+  const keepIds = new Set(liveIds);
+  for (const t of savedTerminals) {
+    if (profileExists(t.profileName) && !queried.has(t.profileName)) keepIds.add(t.sessionId);
+  }
+  // Drop terminals whose profile no longer exists (they cannot reconnect).
+  const eligible = savedTerminals.filter(t => profileExists(t.profileName));
+  const { alive } = TabState.reconcileTerminalTabs(eligible, [...keepIds]);
+
+  for (const t of alive) newTerminal(t);       // each recreated under t.profileName
+  for (const f of savedFiles) openFile(f.path);
+  if (saved.activeTabId && getTab(saved.activeTabId)) activateTab(saved.activeTabId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,6 +1301,17 @@ function fitActiveTerminal() {
 // Tab manager
 // ---------------------------------------------------------------------------
 
+let _persistTimer = null;
+function persistTabs() {
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    try {
+      const data = TabState.serializeTabs(tabs, activeTabId);
+      localStorage.setItem('grv-tabs', JSON.stringify(data));
+    } catch (_) {}
+  }, 300);
+}
+
 function renderTabs() {
   const strip = document.getElementById('tab-strip');
   strip.innerHTML = '';
@@ -1278,6 +1339,7 @@ function renderTabs() {
     el.append(icon, label, close);
     strip.appendChild(el);
   }
+  persistTabs();
 }
 
 function saveTabViewState(tab) {
@@ -1398,10 +1460,20 @@ function closeTab(id) {
   tab.model?.dispose(); tab.origModel?.dispose(); tab.modModel?.dispose();
   tab.model = tab.origModel = tab.modModel = null;   // avoid double-dispose (I1)
   if (tab.kind === 'terminal') {
+    clearTimeout(tab.reconnectTimer);
+    // Best-effort: kill the remote tmux session so it doesn't linger.
+    if (tab.sessionId) {
+      try {
+        fetchWithTimeout(
+          `/api/term-session?profile=${encodeURIComponent(tab.profileName || '')}&session=${encodeURIComponent(tab.sessionId)}`,
+          { method: 'DELETE' }, 5000,
+        ).catch(() => {});
+      } catch (_) {}
+    }
     // Detach WS handlers BEFORE closing/disposing so a late onclose/onerror/
     // onmessage/onopen can't call term.write() on a disposed xterm (C4).
     if (tab.ws) { tab.ws.onopen = tab.ws.onmessage = tab.ws.onclose = tab.ws.onerror = null; }
-    try { tab.ws.close(); } catch (_) {}
+    try { tab.ws && tab.ws.close(); } catch (_) {}
     try { tab.term.dispose(); } catch (_) {}
     tab.el?.remove();
   }
