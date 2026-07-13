@@ -562,7 +562,7 @@ wss.on('connection', async (ws, req) => {
   if (ws.readyState !== ws.OPEN) return;
 
   const repoPath = profile.remotePath || '';
-  const remoteCmd = (hasTmux && sessionId)
+  const remoteCmd = hasTmux
     ? remoteTerminalCommand({ repoPath, sessionName: tmuxSessionName(sessionId) })
     : remoteFallbackCommand({ repoPath });
 
@@ -612,6 +612,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  app,
   shQuote,
   sanitizeSessionId,
   tmuxSessionName,
