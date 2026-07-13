@@ -222,6 +222,11 @@ function treeToJSON(node, ignoredSet) {
   return { type: 'dir', name: node.name, children: kids, ignored: kids.length > 0 && kids.every(k => k.ignored) };
 }
 
+// Resolve the profile named in ?profile=, falling back to the active one.
+function resolveProfile(name) {
+  return (name && profiles[name]) || getActive();
+}
+
 // ---------------------------------------------------------------------------
 // Express routes
 // ---------------------------------------------------------------------------
@@ -453,6 +458,37 @@ app.get('/api/download-dir', (req, res) => {
   proc.stdout.pipe(res);                       // stderr (tar warnings) kept out of the archive stream
   proc.on('close', (code) => { if (code !== 0 && !res.headersSent) res.status(500).end(); });
   req.on('close', () => { try { proc.kill(); } catch (_) {} });
+});
+
+// Kill a terminal's tmux session on the remote (called on explicit tab close).
+app.delete('/api/term-session', (req, res) => {
+  const sessionId = sanitizeSessionId(req.query.session);
+  if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+  const profile = resolveProfile(req.query.profile);
+  if (!profile || !profile.host) return res.status(400).json({ error: 'No profile.' });
+
+  const name = tmuxSessionName(sessionId);
+  const proc = spawn('ssh', [...sshArgs(profile), `tmux kill-session -t ${name} 2>/dev/null || true`]);
+  proc.on('close', () => res.json({ ok: true }));
+  proc.on('error', () => res.json({ ok: true }));   // best-effort cleanup
+});
+
+// List live grv_* tmux sessions on the remote so the client can reconcile tabs.
+app.get('/api/term-sessions', (req, res) => {
+  const profile = resolveProfile(req.query.profile);
+  if (!profile || !profile.host) return res.json({ sessions: [] });
+
+  const proc = spawn('ssh', [...sshArgs(profile), `tmux ls -F '#{session_name}' 2>/dev/null || true`]);
+  let out = '';
+  proc.stdout.on('data', d => { out += d.toString(); });
+  proc.on('close', () => {
+    const sessions = out.split('\n')
+      .map(s => s.trim())
+      .filter(s => s.startsWith('grv_'))
+      .map(s => s.slice('grv_'.length));
+    res.json({ sessions });
+  });
+  proc.on('error', () => res.json({ sessions: [] }));
 });
 
 // ---------------------------------------------------------------------------

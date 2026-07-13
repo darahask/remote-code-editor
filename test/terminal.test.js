@@ -38,3 +38,9 @@ test('remoteFallbackCommand is a plain login shell', () => {
   assert.match(cmd, /cd '\/home\/me\/repo' 2>\/dev\/null; exec \$SHELL -l/);
   assert.ok(!cmd.includes('tmux'));
 });
+
+test('sanitizeSessionId is used to guard endpoint ids (contract check)', () => {
+  // Endpoints must reject ids that fail sanitization before shelling out.
+  assert.strictEqual(t.sanitizeSessionId('../evil'), null);
+  assert.strictEqual(t.sanitizeSessionId('grv_ok1'), 'grv_ok1');
+});
