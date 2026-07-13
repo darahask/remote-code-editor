@@ -483,6 +483,18 @@ app.delete('/api/term-session', (req, res) => {
   proc.on('error', () => { if (!res.headersSent) res.json({ ok: true }); });   // best-effort cleanup
 });
 
+// Lightweight liveness probe: is the active profile's remote reachable over SSH
+// right now? Reuses the ControlMaster so it's cheap (no git, no remotePath). A
+// short ConnectTimeout makes a dropped network fail fast instead of hanging.
+app.get('/api/ping', (req, res) => {
+  const profile = getActive();
+  if (!profile || !profile.host) return res.json({ ok: false, error: 'No active profile.' });
+  const proc = spawn('ssh', ['-o', 'ConnectTimeout=6', ...sshArgs(profile), 'true']);
+  const finish = (ok) => { if (!res.headersSent) res.json({ ok }); };
+  proc.on('close', (code) => finish(code === 0));
+  proc.on('error', () => finish(false));
+});
+
 // List live grv_* tmux sessions on the remote so the client can reconcile tabs.
 app.get('/api/term-sessions', (req, res) => {
   const profile = resolveProfile(req.query.profile);
