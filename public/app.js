@@ -1097,12 +1097,15 @@ const TERM_THEMES = {
 const termTheme = () => TERM_THEMES[currentTheme()] || TERM_THEMES.light;
 const TERM_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace';
 
-function newTerminal() {
+// Real implementation added in the status-indicator task; harmless no-op until then.
+function updateConnIndicator() {}
+
+function newTerminal(restore) {
   if (!window.Terminal) { toast('Terminal library not loaded'); return; }
-  if (!profileState.active) { toast('Create/activate a profile first'); return; }
+  if (!restore && !profileState.active) { toast('Create/activate a profile first'); return; }
 
   const n = ++termCounter;
-  const id = 'term:' + n;
+  const id = restore?.id || ('term:' + n);
   const el = document.createElement('div');
   el.className = 'term-instance';
   el.style.display = 'none';
@@ -1119,19 +1122,74 @@ function newTerminal() {
   term.loadAddon(fit);
   term.open(el);
 
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/terminal?cols=${term.cols}&rows=${term.rows}`);
-  ws.onopen = () => { try { fit.fit(); } catch (_) {} sendResize(ws, term); };
-  ws.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
-  ws.onclose = () => term.write('\r\n\x1b[90m[connection closed]\x1b[0m\r\n');
-  ws.onerror = () => term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
-
-  term.onData(d => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
-  term.onResize(({ cols, rows }) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
-
-  const tab = { id, kind: 'terminal', label: 'Terminal ' + n, dirty: false, term, fit, ws, el };
+  const tab = {
+    id, kind: 'terminal',
+    label: restore?.label || ('Terminal ' + n),
+    dirty: false, term, fit, ws: null, el,
+    sessionId: restore?.sessionId || crypto.randomUUID().replace(/-/g, ''),
+    profileName: restore?.profileName || profileState.active,
+    reconnectAttempt: 0, reconnectTimer: null,
+    persistent: true, connState: 'connecting',
+  };
   tabs.push(tab);
-  activateTab(id);
+  term.onData(d => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'input', data: d })); });
+  term.onResize(({ cols, rows }) => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
+  connectTerminal(tab);
+  if (!restore) activateTab(id);
+  return tab;
+}
+
+function connectTerminal(tab) {
+  if (tab.disposed) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const term = tab.term, fit = tab.fit;
+  const qs = `session=${encodeURIComponent(tab.sessionId)}`
+    + `&profile=${encodeURIComponent(tab.profileName || '')}`
+    + `&cols=${term.cols}&rows=${term.rows}`;
+  const ws = new WebSocket(`${proto}://${location.host}/terminal?${qs}`);
+  tab.ws = ws;
+  tab.connState = tab.reconnectAttempt > 0 ? 'reconnecting' : 'connecting';
+  updateConnIndicator();
+
+  ws.onopen = () => {
+    tab.reconnectAttempt = 0;
+    tab.connState = 'open';
+    updateConnIndicator();
+    try { fit.fit(); } catch (_) {}
+    sendResize(ws, term);
+    term.focus();
+  };
+
+  ws.onmessage = (e) => {
+    if (typeof e.data === 'string' && e.data.startsWith('{"type":"meta"')) {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'meta') {
+          if (msg.persistent === false && tab.persistent) {
+            tab.persistent = false;
+            term.write('\r\n\x1b[90m[tmux not found on remote — this session will not survive disconnects]\x1b[0m\r\n');
+          }
+          return;
+        }
+      } catch (_) { /* fall through and print as normal output */ }
+    }
+    term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+  };
+
+  ws.onerror = () => { /* onclose will handle reconnect */ };
+
+  ws.onclose = () => {
+    if (tab.disposed) return;
+    tab.connState = 'reconnecting';
+    updateConnIndicator();
+    const delay = TabState.nextBackoffDelay(tab.reconnectAttempt);
+    if (tab.reconnectAttempt === 0) {
+      term.write('\r\n\x1b[33m⟳ reconnecting…\x1b[0m\r\n');
+    }
+    tab.reconnectAttempt++;
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = setTimeout(() => connectTerminal(tab), delay);
+  };
 }
 
 function sendResize(ws, term) {
