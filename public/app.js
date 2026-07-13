@@ -1247,6 +1247,17 @@ function newTerminal(restore) {
   tabs.push(tab);
   term.onData(d => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'input', data: d })); });
   term.onResize(({ cols, rows }) => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
+  // Refit whenever the pane actually changes size — tab reveal (display:none →
+  // block), window/sidebar resize, font-size change — so the terminal always
+  // fills its div and tmux is told the real size. Skip while hidden (0×0) to
+  // avoid fitting to a bogus size.
+  const ro = new ResizeObserver(() => {
+    if (tab.disposed || el.clientWidth === 0 || el.clientHeight === 0) return;
+    try { fit.fit(); } catch (_) {}
+    if (tab.ws && tab.ws.readyState === 1) sendResize(tab.ws, term);
+  });
+  ro.observe(el);
+  tab.resizeObserver = ro;
   connectTerminal(tab);
   if (!restore) activateTab(id);
   return tab;
@@ -1274,7 +1285,9 @@ function connectTerminal(tab) {
     tab.reconnectAttempt = 0;
     tab.connState = 'open';
     updateConnIndicator();
-    try { fit.fit(); } catch (_) {}
+    // Only fit if the pane is visible; a hidden/restored tab fits (correctly)
+    // via its ResizeObserver the moment it's revealed.
+    if (tab.el.clientWidth && tab.el.clientHeight) { try { fit.fit(); } catch (_) {} }
     sendResize(ws, term);
     term.focus();
   };
@@ -1536,6 +1549,7 @@ function closeTab(id) {
   tab.model = tab.origModel = tab.modModel = null;   // avoid double-dispose (I1)
   if (tab.kind === 'terminal') {
     clearTimeout(tab.reconnectTimer);
+    try { tab.resizeObserver?.disconnect(); } catch (_) {}
     // Queue the remote tmux session kill and retry until confirmed, so a
     // momentarily-down SSH connection doesn't leave the session orphaned.
     queueSessionKill(tab.profileName, tab.sessionId);

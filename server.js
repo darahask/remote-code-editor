@@ -530,12 +530,18 @@ function tmuxSessionName(sessionId) {
   return 'grv_' + sessionId;
 }
 
-// Attach-or-create: `-A` reattaches if the session exists, else creates it and
-// runs a login shell in the repo dir. On reattach the trailing command is
-// ignored, so scrollback / running processes (Claude Code) are preserved.
+// Attach-or-create with a stable, single-client attach:
+//  - create the session detached (login shell in the repo dir) only if missing,
+//    so scrollback / running processes (Claude Code) are preserved on reconnect;
+//  - enable mouse mode for THIS session only (scroll-wheel scrollback) without
+//    touching the user's global ~/.tmux.conf; errors on ancient tmux are ignored;
+//  - attach with `-d` so any stale client is detached first — that guarantees
+//    tmux sizes the window to the CURRENT viewer, so it fills the pane.
 function remoteTerminalCommand({ repoPath, sessionName }) {
   const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
-  return `${cd}exec tmux new-session -A -s ${sessionName} $SHELL -l`;
+  return `${cd}tmux has-session -t ${sessionName} 2>/dev/null || tmux new-session -d -s ${sessionName} $SHELL -l; `
+       + `tmux set-option -t ${sessionName} mouse on >/dev/null 2>&1; `
+       + `exec tmux attach-session -d -t ${sessionName}`;
 }
 
 function remoteFallbackCommand({ repoPath }) {
