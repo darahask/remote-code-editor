@@ -200,10 +200,70 @@ function initFontSizePicker(current) {
   });
 }
 
+// SSH-backed API calls can hang on a dead connection after a network change.
+// A timeout makes them reject cleanly into existing catch handlers.
+function fetchWithTimeout(url, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 async function init() {
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
   loadTree();
   loadStatus();
+  restoreTabs();          // recreate saved tabs (terminals re-attach via tmux)
+}
+
+// Each terminal is restored under its own bound profile (not just the active
+// one), so a terminal survives even if the user had switched profiles before
+// closing the browser. The active profile itself needs no client restore —
+// the server persists it in profiles.json (_active) and loadProfiles() already
+// re-selects it on load.
+async function restoreTabs() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('grv-tabs') || 'null'); } catch (_) { saved = null; }
+  if (!saved || !Array.isArray(saved.tabs) || saved.tabs.length === 0) return;
+
+  const savedTerminals = saved.tabs.filter(t => t.kind === 'terminal');
+  const savedFiles = saved.tabs.filter(t => t.kind === 'explorer');
+
+  // A falsy profileName means "let the server pick the active profile" — treat
+  // it as existing. A named profile must still be present on this server.
+  const profileExists = (name) => !name || (name in (profileState.profiles || {}));
+
+  // List live tmux sessions on each bound profile that still exists. Session
+  // ids are globally unique, so one combined set across profiles is enough.
+  // Record which profiles we actually queried, so terminals on a profile we
+  // could NOT reach are recreated optimistically (attach-or-create) rather than
+  // dropped, while terminals confirmed dead on a reachable profile are dropped.
+  const profilesToCheck = [...new Set(savedTerminals.map(t => t.profileName).filter(Boolean))]
+    .filter(profileExists);
+  const liveIds = new Set();
+  const queried = new Set();
+  await Promise.all(profilesToCheck.map(async (name) => {
+    try {
+      const res = await fetchWithTimeout(`/api/term-sessions?profile=${encodeURIComponent(name)}`);
+      const data = await res.json();
+      (Array.isArray(data.sessions) ? data.sessions : []).forEach(id => liveIds.add(id));
+      queried.add(name);
+    } catch (_) { /* unreachable profile -> optimistic recreate below */ }
+  }));
+
+  // Keep = confirmed-live sessions PLUS terminals on profiles we couldn't verify.
+  const keepIds = new Set(liveIds);
+  for (const t of savedTerminals) {
+    if (profileExists(t.profileName) && !queried.has(t.profileName)) keepIds.add(t.sessionId);
+  }
+  // Drop terminals whose profile no longer exists (they cannot reconnect).
+  const eligible = savedTerminals.filter(t => profileExists(t.profileName));
+  const { alive } = TabState.reconcileTerminalTabs(eligible, [...keepIds]);
+
+  for (const t of alive) newTerminal(t);       // each recreated under t.profileName
+  for (const f of savedFiles) openFile(f.path);
+  if (saved.activeTabId && getTab(saved.activeTabId)) activateTab(saved.activeTabId);
+  else if (tabs.length > 0) activateTab(tabs[0].id);
+  else showEmptyState();
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +468,7 @@ document.getElementById('show-ignored').addEventListener('change', e => { showIg
 
 async function loadTree() {
   try {
-    const res = await fetch(`/api/tree${showIgnored ? '?all=1' : ''}`);
+    const res = await fetchWithTimeout(`/api/tree${showIgnored ? '?all=1' : ''}`);
     if (!res.ok) { setStatus('SSH error', 'error'); return; }
     const data = await res.json();
     if (data.error) { setStatus(data.error, 'error'); return; }
@@ -871,7 +931,7 @@ async function openFile(filePath) {
   if (getTab(id)) { activateTab(id); return; }
   const seq = ++openSeq;
   try {
-    const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
+    const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 
@@ -898,32 +958,36 @@ async function openFile(filePath) {
 }
 
 async function reloadExplorerTab(tab) {
-  const res = await fetch(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
-  const data = await res.json();
-  if (data.error) { toast(data.error); return; }
-  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
-  tab.model?.dispose();
-  tab.model = null;
-  tab.message = null;
-  if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
-  else if (data.binary) tab.message = 'Binary file — no text preview.';
-  else tab.model = monaco.editor.createModel(data.content, data.language);
-  tab.dirty = false;
-  tab.headContent = undefined; // HEAD may have moved; refetch
-  if (tab.id === activeTabId) activateTab(tab.id);
+  try {
+    const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
+    const data = await res.json();
+    if (data.error) { toast(data.error); return; }
+    if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
+    tab.model?.dispose();
+    tab.model = null;
+    tab.message = null;
+    if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
+    else if (data.binary) tab.message = 'Binary file — no text preview.';
+    else tab.model = monaco.editor.createModel(data.content, data.language);
+    tab.dirty = false;
+    tab.headContent = undefined; // HEAD may have moved; refetch
+    if (tab.id === activeTabId) activateTab(tab.id);
+  } catch (err) { toast('Could not reload file: ' + err.message); }
 }
 
 async function reloadDiffTab(tab) {
   const mode = tab.kind === 'diff-staged' ? 'staged' : 'unstaged';
-  const res = await fetch(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
-  const data = await res.json();
-  if (data.error) { toast(data.error); return; }
-  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
-  tab.origModel?.dispose(); tab.modModel?.dispose();
-  tab.origModel = monaco.editor.createModel(data.original, data.language);
-  tab.modModel  = monaco.editor.createModel(data.modified,  data.language);
-  tab.dirty = false;
-  if (tab.id === activeTabId) activateTab(tab.id);
+  try {
+    const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
+    const data = await res.json();
+    if (data.error) { toast(data.error); return; }
+    if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
+    tab.origModel?.dispose(); tab.modModel?.dispose();
+    tab.origModel = monaco.editor.createModel(data.original, data.language);
+    tab.modModel  = monaco.editor.createModel(data.modified,  data.language);
+    tab.dirty = false;
+    if (tab.id === activeTabId) activateTab(tab.id);
+  } catch (err) { toast('Could not reload file: ' + err.message); }
 }
 
 // ---------------------------------------------------------------------------
@@ -934,7 +998,7 @@ let decoTimer = null;
 
 async function loadHeadForTab(tab) {
   try {
-    const res = await fetch(`/api/file-head?path=${encodeURIComponent(tab.path)}`);
+    const res = await fetchWithTimeout(`/api/file-head?path=${encodeURIComponent(tab.path)}`);
     const data = await res.json();
     tab.headContent = (data && data.tracked) ? data.content : null;
   } catch { tab.headContent = null; }
@@ -1097,12 +1161,32 @@ const TERM_THEMES = {
 const termTheme = () => TERM_THEMES[currentTheme()] || TERM_THEMES.light;
 const TERM_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace';
 
-function newTerminal() {
+function updateConnIndicator() {
+  const el = document.getElementById('sb-conn');
+  if (!el) return;
+  const terms = tabs.filter(t => t.kind === 'terminal' && !t.disposed);
+  if (terms.length === 0) { el.textContent = ''; el.className = 'sb-item sb-conn'; return; }
+  const reconnecting = terms.filter(t => t.connState === 'reconnecting');
+  if (reconnecting.length > 0) {
+    el.textContent = `⟳ reconnecting${reconnecting.length > 1 ? ' (' + reconnecting.length + ')' : ''}`;
+    el.className = 'sb-item sb-conn is-reconnecting';
+  } else {
+    el.textContent = '● connected';
+    el.className = 'sb-item sb-conn is-connected';
+  }
+}
+
+function terminalProfileGone(tab) {
+  // profileState.profiles is an object keyed by profile name.
+  return !!tab.profileName && !(tab.profileName in (profileState.profiles || {}));
+}
+
+function newTerminal(restore) {
   if (!window.Terminal) { toast('Terminal library not loaded'); return; }
-  if (!profileState.active) { toast('Create/activate a profile first'); return; }
+  if (!restore && !profileState.active) { toast('Create/activate a profile first'); return; }
 
   const n = ++termCounter;
-  const id = 'term:' + n;
+  const id = restore?.id || ('term:' + n);
   const el = document.createElement('div');
   el.className = 'term-instance';
   el.style.display = 'none';
@@ -1119,19 +1203,87 @@ function newTerminal() {
   term.loadAddon(fit);
   term.open(el);
 
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/terminal?cols=${term.cols}&rows=${term.rows}`);
-  ws.onopen = () => { try { fit.fit(); } catch (_) {} sendResize(ws, term); };
-  ws.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
-  ws.onclose = () => term.write('\r\n\x1b[90m[connection closed]\x1b[0m\r\n');
-  ws.onerror = () => term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
-
-  term.onData(d => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data: d })); });
-  term.onResize(({ cols, rows }) => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
-
-  const tab = { id, kind: 'terminal', label: 'Terminal ' + n, dirty: false, term, fit, ws, el };
+  const tab = {
+    id, kind: 'terminal',
+    label: restore?.label || ('Terminal ' + n),
+    dirty: false, term, fit, ws: null, el,
+    sessionId: restore?.sessionId || crypto.randomUUID().replace(/-/g, ''),
+    profileName: restore?.profileName || profileState.active,
+    reconnectAttempt: 0, reconnectTimer: null,
+    persistent: true, connState: 'connecting',
+  };
   tabs.push(tab);
-  activateTab(id);
+  term.onData(d => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'input', data: d })); });
+  term.onResize(({ cols, rows }) => { if (tab.ws && tab.ws.readyState === 1) tab.ws.send(JSON.stringify({ type: 'resize', cols, rows })); });
+  connectTerminal(tab);
+  if (!restore) activateTab(id);
+  return tab;
+}
+
+function connectTerminal(tab) {
+  if (tab.disposed) return;
+  if (terminalProfileGone(tab)) {
+    tab.term.write('\r\n\x1b[90m[profile no longer exists — not reconnecting]\x1b[0m\r\n');
+    tab.connState = 'closed';
+    updateConnIndicator();
+    return;
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const term = tab.term, fit = tab.fit;
+  const qs = `session=${encodeURIComponent(tab.sessionId)}`
+    + `&profile=${encodeURIComponent(tab.profileName || '')}`
+    + `&cols=${term.cols}&rows=${term.rows}`;
+  const ws = new WebSocket(`${proto}://${location.host}/terminal?${qs}`);
+  tab.ws = ws;
+  tab.connState = tab.reconnectAttempt > 0 ? 'reconnecting' : 'connecting';
+  updateConnIndicator();
+
+  ws.onopen = () => {
+    tab.reconnectAttempt = 0;
+    tab.connState = 'open';
+    updateConnIndicator();
+    try { fit.fit(); } catch (_) {}
+    sendResize(ws, term);
+    term.focus();
+  };
+
+  ws.onmessage = (e) => {
+    if (typeof e.data === 'string' && e.data.startsWith('{"type":"meta"')) {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'meta') {
+          if (msg.persistent === false && tab.persistent) {
+            tab.persistent = false;
+            term.write('\r\n\x1b[90m[tmux not found on remote — this session will not survive disconnects]\x1b[0m\r\n');
+          }
+          return;
+        }
+      } catch (_) { /* fall through and print as normal output */ }
+    }
+    term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+  };
+
+  ws.onerror = () => { /* onclose will handle reconnect */ };
+
+  ws.onclose = () => {
+    if (tab.disposed) return;
+    if (terminalProfileGone(tab)) {
+      clearTimeout(tab.reconnectTimer);
+      term.write('\r\n\x1b[90m[profile no longer exists — not reconnecting]\x1b[0m\r\n');
+      tab.connState = 'closed';
+      updateConnIndicator();
+      return;
+    }
+    tab.connState = 'reconnecting';
+    updateConnIndicator();
+    const delay = TabState.nextBackoffDelay(tab.reconnectAttempt);
+    if (tab.reconnectAttempt === 0) {
+      term.write('\r\n\x1b[33m⟳ reconnecting…\x1b[0m\r\n');
+    }
+    tab.reconnectAttempt++;
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = setTimeout(() => connectTerminal(tab), delay);
+  };
 }
 
 function sendResize(ws, term) {
@@ -1150,6 +1302,17 @@ function fitActiveTerminal() {
 // ---------------------------------------------------------------------------
 // Tab manager
 // ---------------------------------------------------------------------------
+
+let _persistTimer = null;
+function persistTabs() {
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    try {
+      const data = TabState.serializeTabs(tabs, activeTabId);
+      localStorage.setItem('grv-tabs', JSON.stringify(data));
+    } catch (_) {}
+  }, 300);
+}
 
 function renderTabs() {
   const strip = document.getElementById('tab-strip');
@@ -1178,6 +1341,7 @@ function renderTabs() {
     el.append(icon, label, close);
     strip.appendChild(el);
   }
+  persistTabs();
 }
 
 function saveTabViewState(tab) {
@@ -1298,10 +1462,20 @@ function closeTab(id) {
   tab.model?.dispose(); tab.origModel?.dispose(); tab.modModel?.dispose();
   tab.model = tab.origModel = tab.modModel = null;   // avoid double-dispose (I1)
   if (tab.kind === 'terminal') {
+    clearTimeout(tab.reconnectTimer);
+    // Best-effort: kill the remote tmux session so it doesn't linger.
+    if (tab.sessionId) {
+      try {
+        fetchWithTimeout(
+          `/api/term-session?profile=${encodeURIComponent(tab.profileName || '')}&session=${encodeURIComponent(tab.sessionId)}`,
+          { method: 'DELETE' }, 5000,
+        ).catch(() => {});
+      } catch (_) {}
+    }
     // Detach WS handlers BEFORE closing/disposing so a late onclose/onerror/
     // onmessage/onopen can't call term.write() on a disposed xterm (C4).
     if (tab.ws) { tab.ws.onopen = tab.ws.onmessage = tab.ws.onclose = tab.ws.onerror = null; }
-    try { tab.ws.close(); } catch (_) {}
+    try { tab.ws && tab.ws.close(); } catch (_) {}
     try { tab.term.dispose(); } catch (_) {}
     tab.el?.remove();
   }
@@ -1482,6 +1656,19 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(fitActiveTerminal, 120);
 });
 
+function reconnectAllTerminals() {
+  for (const tab of tabs) {
+    if (tab.kind !== 'terminal' || tab.disposed) continue;
+    if (tab.ws && tab.ws.readyState === 1) continue;   // already open
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectAttempt = 0;                           // reset backoff for an immediate try
+    connectTerminal(tab);
+  }
+}
+
+window.addEventListener('online', () => { reconnectAllTerminals(); loadStatus(); loadTree(); });
+window.addEventListener('focus', () => { reconnectAllTerminals(); });
+
 // Resizable sidebar (helps with deep folder trees)
 (function setupSidebarResize() {
   const sidebar = document.getElementById('sidebar');
@@ -1523,10 +1710,10 @@ async function saveCurrentFile() {
     ? tab.model.getValue()
     : diffEditor.getModifiedEditor().getValue();
   try {
-    const res = await fetch('/api/file-content', {
+    const res = await fetchWithTimeout('/api/file-content', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: tab.path, content }),
-    });
+    }, 20000);
     const data = await res.json();
     if (data.error) { toast('Save failed: ' + data.error); return; }
     tab.dirty = false;
@@ -1541,7 +1728,7 @@ async function saveCurrentFile() {
 
 async function loadStatus() {
   try {
-    const res = await fetch('/api/status');
+    const res = await fetchWithTimeout('/api/status');
     if (!res.ok) return;
     const data = await res.json();
     if (data.error) return;
@@ -1667,7 +1854,7 @@ function renderList(containerId, files, mode, isStaged) {
 
 async function toggleStage(filePath, isStaged) {
   try {
-    const res = await fetch(isStaged ? '/api/unstage' : '/api/stage', {
+    const res = await fetchWithTimeout(isStaged ? '/api/unstage' : '/api/stage', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath }),
     });
@@ -1686,7 +1873,7 @@ async function selectDiff(filePath, mode, rowEl, revealLine) {
   const seq = ++openSeq;
 
   try {
-    const res = await fetch(`/api/file-diff?path=${encodeURIComponent(filePath)}&mode=${mode}`);
+    const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(filePath)}&mode=${mode}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 

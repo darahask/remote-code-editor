@@ -55,8 +55,9 @@ function sshArgs(profile) {
   return args;
 }
 
-// Args for an interactive login shell over SSH, cd'd into the repo folder.
-function sshTerminalArgs(profile) {
+// Base args for an interactive login shell over SSH (no trailing command — the
+// caller appends the remote command it wants to run).
+function sshBaseTerminalArgs(profile) {
   const args = [
     '-tt',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -66,9 +67,40 @@ function sshTerminalArgs(profile) {
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
   args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
-  const cwd = profile.remotePath ? `cd ${shQuote(profile.remotePath)} 2>/dev/null; ` : '';
-  args.push(`${cwd}exec $SHELL -l`);
   return args;
+}
+
+// Cache tmux availability per user@host so we probe the remote only once.
+const _tmuxCache = new Map();
+
+function profileKey(profile) {
+  return (profile.username ? profile.username + '@' : '') + profile.host;
+}
+
+function probeTmux(profile) {
+  const key = profileKey(profile);
+  if (_tmuxCache.has(key)) return Promise.resolve(_tmuxCache.get(key));
+  return new Promise((resolve) => {
+    const proc = spawn('ssh', [...sshArgs(profile), 'command -v tmux >/dev/null 2>&1 && echo yes || echo no']);
+    let out = '';
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.on('close', (code) => {
+      // Only cache a definitive answer. A blip in the ssh connection itself
+      // (non-zero exit, no recognizable token) must NOT be cached as "no
+      // tmux" — that would permanently downgrade the host to one-shot shells
+      // until the server restarts. Re-probe next time instead.
+      if (out.includes('yes')) {
+        _tmuxCache.set(key, true);
+        resolve(true);
+      } else if (out.includes('no') && code === 0) {
+        _tmuxCache.set(key, false);
+        resolve(false);
+      } else {
+        resolve(false);
+      }
+    });
+    proc.on('error', () => { resolve(false); });
+  });
 }
 
 // Tear down a specific profile's SSH ControlMaster. Takes the profile
@@ -198,6 +230,11 @@ function treeToJSON(node, ignoredSet) {
     .sort((a, b) => a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name))
     .map(c => treeToJSON(c, ignoredSet));
   return { type: 'dir', name: node.name, children: kids, ignored: kids.length > 0 && kids.every(k => k.ignored) };
+}
+
+// Resolve the profile named in ?profile=, falling back to the active one.
+function resolveProfile(name) {
+  return (name && profiles[name]) || getActive();
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +470,67 @@ app.get('/api/download-dir', (req, res) => {
   req.on('close', () => { try { proc.kill(); } catch (_) {} });
 });
 
+// Kill a terminal's tmux session on the remote (called on explicit tab close).
+app.delete('/api/term-session', (req, res) => {
+  const sessionId = sanitizeSessionId(req.query.session);
+  if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+  const profile = resolveProfile(req.query.profile);
+  if (!profile || !profile.host) return res.status(400).json({ error: 'No profile.' });
+
+  const name = tmuxSessionName(sessionId);
+  const proc = spawn('ssh', [...sshArgs(profile), `tmux kill-session -t ${name} 2>/dev/null || true`]);
+  proc.on('close', () => { if (!res.headersSent) res.json({ ok: true }); });
+  proc.on('error', () => { if (!res.headersSent) res.json({ ok: true }); });   // best-effort cleanup
+});
+
+// List live grv_* tmux sessions on the remote so the client can reconcile tabs.
+app.get('/api/term-sessions', (req, res) => {
+  const profile = resolveProfile(req.query.profile);
+  if (!profile || !profile.host) return res.json({ sessions: [] });
+
+  const proc = spawn('ssh', [...sshArgs(profile), `tmux ls -F '#{session_name}' 2>/dev/null || true`]);
+  let out = '';
+  proc.stdout.on('data', d => { out += d.toString(); });
+  proc.on('close', () => {
+    if (res.headersSent) return;
+    const sessions = out.split('\n')
+      .map(s => s.trim())
+      .filter(s => s.startsWith('grv_'))
+      .map(s => s.slice('grv_'.length));
+    res.json({ sessions });
+  });
+  proc.on('error', () => { if (!res.headersSent) res.json({ sessions: [] }); });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal session helpers (pure — unit-tested in test/terminal.test.js)
+// ---------------------------------------------------------------------------
+
+// Session ids come from the browser and are interpolated into a tmux session
+// name inside a remote shell command, so they must be strictly validated.
+function sanitizeSessionId(raw) {
+  if (typeof raw !== 'string') return null;
+  if (raw.length === 0 || raw.length > 64) return null;
+  return /^[A-Za-z0-9_]+$/.test(raw) ? raw : null;
+}
+
+function tmuxSessionName(sessionId) {
+  return 'grv_' + sessionId;
+}
+
+// Attach-or-create: `-A` reattaches if the session exists, else creates it and
+// runs a login shell in the repo dir. On reattach the trailing command is
+// ignored, so scrollback / running processes (Claude Code) are preserved.
+function remoteTerminalCommand({ repoPath, sessionName }) {
+  const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
+  return `${cd}exec tmux new-session -A -s ${sessionName} $SHELL -l`;
+}
+
+function remoteFallbackCommand({ repoPath }) {
+  const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
+  return `${cd}exec $SHELL -l`;
+}
+
 // ---------------------------------------------------------------------------
 // Terminal (PTY-backed SSH over WebSocket)
 // ---------------------------------------------------------------------------
@@ -440,21 +538,42 @@ app.get('/api/download-dir', (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/terminal' });
 
-wss.on('connection', (ws, req) => {
-  const profile = getActive();
+wss.on('connection', async (ws, req) => {
+  const url = new URL(req.url, 'http://localhost');
+  const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
+  const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
+
+  // Bind to the profile the terminal was created under (not getActive()), so a
+  // reconnect always attaches to the correct remote even after a profile switch.
+  const profileName = url.searchParams.get('profile');
+  const profile = (profileName && profiles[profileName]) || getActive();
   if (!profile || !profile.host) {
     ws.send('\r\n\x1b[31mNo active profile. Create one first.\x1b[0m\r\n');
     ws.close();
     return;
   }
 
-  const url = new URL(req.url, 'http://localhost');
-  const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
-  const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
+  const sessionId = sanitizeSessionId(url.searchParams.get('session'));
+
+  let hasTmux = false;
+  try { hasTmux = sessionId ? await probeTmux(profile) : false; } catch (_) { hasTmux = false; }
+
+  // The socket may have closed while we were probing.
+  if (ws.readyState !== ws.OPEN) return;
+
+  const repoPath = profile.remotePath || '';
+  const remoteCmd = (hasTmux && sessionId)
+    ? remoteTerminalCommand({ repoPath, sessionName: tmuxSessionName(sessionId) })
+    : remoteFallbackCommand({ repoPath });
+
+  if (!hasTmux) {
+    // Tell the client persistence is unavailable so it can surface a hint once.
+    try { ws.send(JSON.stringify({ type: 'meta', persistent: false })); } catch (_) {}
+  }
 
   let term;
   try {
-    term = pty.spawn('ssh', sshTerminalArgs(profile), {
+    term = pty.spawn('ssh', [...sshBaseTerminalArgs(profile), remoteCmd], {
       name: 'xterm-256color',
       cols, rows,
       cwd: os.homedir(),
@@ -476,11 +595,26 @@ wss.on('connection', (ws, req) => {
     else if (msg.type === 'resize') { try { term.resize(msg.cols, msg.rows); } catch (_) {} }
   });
 
+  // Killing the local ssh only detaches the tmux client; the remote session (and
+  // Claude Code) keeps running and is re-attached on the next connection.
   ws.on('close', () => { try { term.kill(); } catch (_) {} });
 });
 
 const PORT = process.env.PORT || 4570;
-server.listen(PORT, () => {
-  console.log(`Git Remote Viewer → http://localhost:${PORT}`);
-  if (!activeProfileName) console.log('No profiles yet — open the UI to create one.');
-});
+
+// Only start listening when run directly (`node server.js`). When required by a
+// unit test, export the pure helpers instead of booting a server.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Git Remote Viewer → http://localhost:${PORT}`);
+    if (!activeProfileName) console.log('No profiles yet — open the UI to create one.');
+  });
+}
+
+module.exports = {
+  shQuote,
+  sanitizeSessionId,
+  tmuxSessionName,
+  remoteTerminalCommand,
+  remoteFallbackCommand,
+};
