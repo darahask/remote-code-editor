@@ -870,6 +870,8 @@ html[data-theme="dark"] body::before {
 .sb-conn { color: var(--statusbar-dim); font-size: 11px; }
 .sb-conn.error { color: var(--deleted); }
 .sb-conn.ok { color: var(--added); }
+.sb-conn.is-connected { opacity: 0.7; }
+.sb-conn.is-reconnecting { color: #d9a13a; }
 
 .sb-btn {
   background: none;

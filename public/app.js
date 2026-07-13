@@ -200,6 +200,14 @@ function initFontSizePicker(current) {
   });
 }
 
+// SSH-backed API calls can hang on a dead connection after a network change.
+// A timeout makes them reject cleanly into existing catch handlers.
+function fetchWithTimeout(url, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 async function init() {
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
   loadTree();
@@ -408,7 +416,7 @@ document.getElementById('show-ignored').addEventListener('change', e => { showIg
 
 async function loadTree() {
   try {
-    const res = await fetch(`/api/tree${showIgnored ? '?all=1' : ''}`);
+    const res = await fetchWithTimeout(`/api/tree${showIgnored ? '?all=1' : ''}`);
     if (!res.ok) { setStatus('SSH error', 'error'); return; }
     const data = await res.json();
     if (data.error) { setStatus(data.error, 'error'); return; }
@@ -871,7 +879,7 @@ async function openFile(filePath) {
   if (getTab(id)) { activateTab(id); return; }
   const seq = ++openSeq;
   try {
-    const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
+    const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 
@@ -898,7 +906,7 @@ async function openFile(filePath) {
 }
 
 async function reloadExplorerTab(tab) {
-  const res = await fetch(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
+  const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
   const data = await res.json();
   if (data.error) { toast(data.error); return; }
   if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
@@ -915,7 +923,7 @@ async function reloadExplorerTab(tab) {
 
 async function reloadDiffTab(tab) {
   const mode = tab.kind === 'diff-staged' ? 'staged' : 'unstaged';
-  const res = await fetch(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
+  const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
   const data = await res.json();
   if (data.error) { toast(data.error); return; }
   if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
@@ -934,7 +942,7 @@ let decoTimer = null;
 
 async function loadHeadForTab(tab) {
   try {
-    const res = await fetch(`/api/file-head?path=${encodeURIComponent(tab.path)}`);
+    const res = await fetchWithTimeout(`/api/file-head?path=${encodeURIComponent(tab.path)}`);
     const data = await res.json();
     tab.headContent = (data && data.tracked) ? data.content : null;
   } catch { tab.headContent = null; }
@@ -1097,8 +1105,20 @@ const TERM_THEMES = {
 const termTheme = () => TERM_THEMES[currentTheme()] || TERM_THEMES.light;
 const TERM_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monospace';
 
-// Real implementation added in the status-indicator task; harmless no-op until then.
-function updateConnIndicator() {}
+function updateConnIndicator() {
+  const el = document.getElementById('sb-conn');
+  if (!el) return;
+  const terms = tabs.filter(t => t.kind === 'terminal' && !t.disposed);
+  if (terms.length === 0) { el.textContent = ''; el.className = 'sb-item sb-conn'; return; }
+  const reconnecting = terms.filter(t => t.connState === 'reconnecting');
+  if (reconnecting.length > 0) {
+    el.textContent = `⟳ reconnecting${reconnecting.length > 1 ? ' (' + reconnecting.length + ')' : ''}`;
+    el.className = 'sb-item sb-conn is-reconnecting';
+  } else {
+    el.textContent = '● connected';
+    el.className = 'sb-item sb-conn is-connected';
+  }
+}
 
 function terminalProfileGone(tab) {
   // profileState.profiles is an object keyed by profile name.
@@ -1558,6 +1578,19 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(fitActiveTerminal, 120);
 });
 
+function reconnectAllTerminals() {
+  for (const tab of tabs) {
+    if (tab.kind !== 'terminal' || tab.disposed) continue;
+    if (tab.ws && tab.ws.readyState === 1) continue;   // already open
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectAttempt = 0;                           // reset backoff for an immediate try
+    connectTerminal(tab);
+  }
+}
+
+window.addEventListener('online', () => { reconnectAllTerminals(); loadStatus(); loadTree(); });
+window.addEventListener('focus', () => { reconnectAllTerminals(); });
+
 // Resizable sidebar (helps with deep folder trees)
 (function setupSidebarResize() {
   const sidebar = document.getElementById('sidebar');
@@ -1599,10 +1632,10 @@ async function saveCurrentFile() {
     ? tab.model.getValue()
     : diffEditor.getModifiedEditor().getValue();
   try {
-    const res = await fetch('/api/file-content', {
+    const res = await fetchWithTimeout('/api/file-content', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: tab.path, content }),
-    });
+    }, 20000);
     const data = await res.json();
     if (data.error) { toast('Save failed: ' + data.error); return; }
     tab.dirty = false;
@@ -1617,7 +1650,7 @@ async function saveCurrentFile() {
 
 async function loadStatus() {
   try {
-    const res = await fetch('/api/status');
+    const res = await fetchWithTimeout('/api/status');
     if (!res.ok) return;
     const data = await res.json();
     if (data.error) return;
