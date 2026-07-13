@@ -1100,6 +1100,11 @@ const TERM_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, monosp
 // Real implementation added in the status-indicator task; harmless no-op until then.
 function updateConnIndicator() {}
 
+function terminalProfileGone(tab) {
+  // profileState.profiles is an object keyed by profile name.
+  return !!tab.profileName && !(tab.profileName in (profileState.profiles || {}));
+}
+
 function newTerminal(restore) {
   if (!window.Terminal) { toast('Terminal library not loaded'); return; }
   if (!restore && !profileState.active) { toast('Create/activate a profile first'); return; }
@@ -1141,6 +1146,12 @@ function newTerminal(restore) {
 
 function connectTerminal(tab) {
   if (tab.disposed) return;
+  if (terminalProfileGone(tab)) {
+    tab.term.write('\r\n\x1b[90m[profile no longer exists — not reconnecting]\x1b[0m\r\n');
+    tab.connState = 'closed';
+    updateConnIndicator();
+    return;
+  }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const term = tab.term, fit = tab.fit;
   const qs = `session=${encodeURIComponent(tab.sessionId)}`
@@ -1180,6 +1191,13 @@ function connectTerminal(tab) {
 
   ws.onclose = () => {
     if (tab.disposed) return;
+    if (terminalProfileGone(tab)) {
+      clearTimeout(tab.reconnectTimer);
+      term.write('\r\n\x1b[90m[profile no longer exists — not reconnecting]\x1b[0m\r\n');
+      tab.connState = 'closed';
+      updateConnIndicator();
+      return;
+    }
     tab.connState = 'reconnecting';
     updateConnIndicator();
     const delay = TabState.nextBackoffDelay(tab.reconnectAttempt);
