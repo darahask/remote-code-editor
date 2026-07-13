@@ -55,8 +55,9 @@ function sshArgs(profile) {
   return args;
 }
 
-// Args for an interactive login shell over SSH, cd'd into the repo folder.
-function sshTerminalArgs(profile) {
+// Base args for an interactive login shell over SSH (no trailing command — the
+// caller appends the remote command it wants to run).
+function sshBaseTerminalArgs(profile) {
   const args = [
     '-tt',
     '-o', 'StrictHostKeyChecking=accept-new',
@@ -66,9 +67,30 @@ function sshTerminalArgs(profile) {
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
   args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
-  const cwd = profile.remotePath ? `cd ${shQuote(profile.remotePath)} 2>/dev/null; ` : '';
-  args.push(`${cwd}exec $SHELL -l`);
   return args;
+}
+
+// Cache tmux availability per user@host so we probe the remote only once.
+const _tmuxCache = new Map();
+
+function profileKey(profile) {
+  return (profile.username ? profile.username + '@' : '') + profile.host;
+}
+
+function probeTmux(profile) {
+  const key = profileKey(profile);
+  if (_tmuxCache.has(key)) return Promise.resolve(_tmuxCache.get(key));
+  return new Promise((resolve) => {
+    const proc = spawn('ssh', [...sshArgs(profile), 'command -v tmux >/dev/null 2>&1 && echo yes || echo no']);
+    let out = '';
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.on('close', () => {
+      const has = out.includes('yes');
+      _tmuxCache.set(key, has);
+      resolve(has);
+    });
+    proc.on('error', () => { _tmuxCache.set(key, false); resolve(false); });
+  });
 }
 
 // Tear down a specific profile's SSH ControlMaster. Takes the profile
@@ -469,21 +491,42 @@ function remoteFallbackCommand({ repoPath }) {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/terminal' });
 
-wss.on('connection', (ws, req) => {
-  const profile = getActive();
+wss.on('connection', async (ws, req) => {
+  const url = new URL(req.url, 'http://localhost');
+  const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
+  const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
+
+  // Bind to the profile the terminal was created under (not getActive()), so a
+  // reconnect always attaches to the correct remote even after a profile switch.
+  const profileName = url.searchParams.get('profile');
+  const profile = (profileName && profiles[profileName]) || getActive();
   if (!profile || !profile.host) {
     ws.send('\r\n\x1b[31mNo active profile. Create one first.\x1b[0m\r\n');
     ws.close();
     return;
   }
 
-  const url = new URL(req.url, 'http://localhost');
-  const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
-  const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
+  const sessionId = sanitizeSessionId(url.searchParams.get('session'));
+
+  let hasTmux = false;
+  try { hasTmux = sessionId ? await probeTmux(profile) : false; } catch (_) { hasTmux = false; }
+
+  // The socket may have closed while we were probing.
+  if (ws.readyState !== ws.OPEN) return;
+
+  const repoPath = profile.remotePath || '';
+  const remoteCmd = (hasTmux && sessionId)
+    ? remoteTerminalCommand({ repoPath, sessionName: tmuxSessionName(sessionId) })
+    : remoteFallbackCommand({ repoPath });
+
+  if (!hasTmux) {
+    // Tell the client persistence is unavailable so it can surface a hint once.
+    try { ws.send(JSON.stringify({ type: 'meta', persistent: false })); } catch (_) {}
+  }
 
   let term;
   try {
-    term = pty.spawn('ssh', sshTerminalArgs(profile), {
+    term = pty.spawn('ssh', [...sshBaseTerminalArgs(profile), remoteCmd], {
       name: 'xterm-256color',
       cols, rows,
       cwd: os.homedir(),
@@ -505,6 +548,8 @@ wss.on('connection', (ws, req) => {
     else if (msg.type === 'resize') { try { term.resize(msg.cols, msg.rows); } catch (_) {} }
   });
 
+  // Killing the local ssh only detaches the tmux client; the remote session (and
+  // Claude Code) keeps running and is re-attached on the next connection.
   ws.on('close', () => { try { term.kill(); } catch (_) {} });
 });
 
