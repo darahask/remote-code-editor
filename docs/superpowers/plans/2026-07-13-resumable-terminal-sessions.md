@@ -899,6 +899,12 @@ And remove the individual calls suggested for `openFile`/`closeTab`/`newTerminal
 
 Add near `init` (~line 203):
 
+Each terminal is restored under **its own** bound profile (not just the active
+one), so a terminal survives even if the user had switched profiles before
+closing the browser. The active profile itself needs no client restore — the
+server persists it in `profiles.json` (`_active`) and `loadProfiles()` already
+re-selects it on load.
+
 ```js
 async function restoreTabs() {
   let saved;
@@ -908,27 +914,39 @@ async function restoreTabs() {
   const savedTerminals = saved.tabs.filter(t => t.kind === 'terminal');
   const savedFiles = saved.tabs.filter(t => t.kind === 'explorer');
 
-  // Reconcile terminals against live tmux sessions for the active profile.
-  let live = [];
-  if (savedTerminals.length && profileState.active) {
-    try {
-      const res = await fetchWithTimeout(`/api/term-sessions?profile=${encodeURIComponent(profileState.active)}`);
-      const data = await res.json();
-      live = Array.isArray(data.sessions) ? data.sessions : [];
-    } catch (_) { live = []; }
-  }
-  const { alive } = TabState.reconcileTerminalTabs(savedTerminals, live);
-  const aliveIds = new Set(alive.map(t => t.sessionId));
+  // A falsy profileName means "let the server pick the active profile" — treat
+  // it as existing. A named profile must still be present on this server.
+  const profileExists = (name) => !name || (name in (profileState.profiles || {}));
 
+  // List live tmux sessions on each bound profile that still exists. Session
+  // ids are globally unique, so one combined set across profiles is enough.
+  // Record which profiles we actually queried, so terminals on a profile we
+  // could NOT reach are recreated optimistically (attach-or-create) rather than
+  // dropped, while terminals confirmed dead on a reachable profile are dropped.
+  const profilesToCheck = [...new Set(savedTerminals.map(t => t.profileName).filter(Boolean))]
+    .filter(profileExists);
+  const liveIds = new Set();
+  const queried = new Set();
+  await Promise.all(profilesToCheck.map(async (name) => {
+    try {
+      const res = await fetchWithTimeout(`/api/term-sessions?profile=${encodeURIComponent(name)}`);
+      const data = await res.json();
+      (Array.isArray(data.sessions) ? data.sessions : []).forEach(id => liveIds.add(id));
+      queried.add(name);
+    } catch (_) { /* unreachable profile -> optimistic recreate below */ }
+  }));
+
+  // Keep = confirmed-live sessions PLUS terminals on profiles we couldn't verify.
+  const keepIds = new Set(liveIds);
   for (const t of savedTerminals) {
-    // Re-create tabs whose session still exists (alive), OR whose profile we
-    // can't currently verify — new-session -A will simply recreate if needed.
-    if (t.profileName === profileState.active && !aliveIds.has(t.sessionId)) continue; // truly dead on active profile
-    newTerminal(t);
+    if (profileExists(t.profileName) && !queried.has(t.profileName)) keepIds.add(t.sessionId);
   }
-  for (const f of savedFiles) {
-    openFile(f.path);
-  }
+  // Drop terminals whose profile no longer exists (they cannot reconnect).
+  const eligible = savedTerminals.filter(t => profileExists(t.profileName));
+  const { alive } = TabState.reconcileTerminalTabs(eligible, [...keepIds]);
+
+  for (const t of alive) newTerminal(t);       // each recreated under t.profileName
+  for (const f of savedFiles) openFile(f.path);
   if (saved.activeTabId && getTab(saved.activeTabId)) activateTab(saved.activeTabId);
 }
 ```
