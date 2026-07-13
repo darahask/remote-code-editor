@@ -84,12 +84,22 @@ function probeTmux(profile) {
     const proc = spawn('ssh', [...sshArgs(profile), 'command -v tmux >/dev/null 2>&1 && echo yes || echo no']);
     let out = '';
     proc.stdout.on('data', d => { out += d.toString(); });
-    proc.on('close', () => {
-      const has = out.includes('yes');
-      _tmuxCache.set(key, has);
-      resolve(has);
+    proc.on('close', (code) => {
+      // Only cache a definitive answer. A blip in the ssh connection itself
+      // (non-zero exit, no recognizable token) must NOT be cached as "no
+      // tmux" — that would permanently downgrade the host to one-shot shells
+      // until the server restarts. Re-probe next time instead.
+      if (out.includes('yes')) {
+        _tmuxCache.set(key, true);
+        resolve(true);
+      } else if (out.includes('no') && code === 0) {
+        _tmuxCache.set(key, false);
+        resolve(false);
+      } else {
+        resolve(false);
+      }
     });
-    proc.on('error', () => { _tmuxCache.set(key, false); resolve(false); });
+    proc.on('error', () => { resolve(false); });
   });
 }
 
