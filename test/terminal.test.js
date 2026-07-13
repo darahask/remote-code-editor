@@ -25,7 +25,10 @@ test('tmuxSessionName prefixes with grv_', () => {
 test('remoteTerminalCommand builds an attach-or-create tmux command', () => {
   const cmd = t.remoteTerminalCommand({ repoPath: '/home/me/repo', sessionName: 'grv_x' });
   assert.match(cmd, /cd '\/home\/me\/repo' 2>\/dev\/null; /);
-  assert.match(cmd, /exec tmux new-session -A -s grv_x \$SHELL -l/);
+  // create-if-missing (detached), enable session-scoped mouse, single-client attach
+  assert.match(cmd, /tmux has-session -t grv_x 2>\/dev\/null \|\| tmux new-session -d -s grv_x \$SHELL -l/);
+  assert.match(cmd, /tmux set-option -t grv_x mouse on/);
+  assert.match(cmd, /exec tmux attach-session -d -t grv_x/);
 });
 
 test('remoteTerminalCommand quotes paths with spaces/quotes safely', () => {
