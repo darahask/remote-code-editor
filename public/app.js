@@ -1289,6 +1289,7 @@ function connectTerminal(tab) {
     // via its ResizeObserver the moment it's revealed.
     if (tab.el.clientWidth && tab.el.clientHeight) { try { fit.fit(); } catch (_) {} }
     sendResize(ws, term);
+    scheduleRefit(tab);   // correct once font/layout settle
     term.focus();
   };
 
@@ -1342,6 +1343,22 @@ function fitActiveTerminal() {
     sendResize(t.ws, t.term);
     t.term.focus();
   }
+}
+
+// Refit a terminal after the things that change cell metrics without changing
+// the container size settle: the next paint (layout), the terminal font loading
+// (system font not yet resolved → wrong cell size on the first fit), and a short
+// fallback delay. The ResizeObserver only catches container-size changes, so
+// these cover the font/first-paint cases it can't see.
+function scheduleRefit(tab) {
+  const doFit = () => {
+    if (tab.disposed || !tab.el.clientWidth || !tab.el.clientHeight) return;
+    try { tab.fit.fit(); } catch (_) {}
+    if (tab.ws && tab.ws.readyState === 1) sendResize(tab.ws, tab.term);
+  };
+  requestAnimationFrame(doFit);
+  setTimeout(doFit, 250);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(doFit);
 }
 
 // ---------------------------------------------------------------------------
@@ -1462,6 +1479,7 @@ function activateTab(id) {
     for (const el of document.querySelectorAll('.term-instance')) el.style.display = 'none';
     tab.el.style.display = 'block';
     setTimeout(() => fitActiveTerminal(), 30);
+    scheduleRefit(tab);   // also refit after paint/font settle, not just +30ms
     renderTabs();
     document.querySelectorAll('.tree-row.selected, .file-row.selected').forEach(r => r.classList.remove('selected'));
     return;
