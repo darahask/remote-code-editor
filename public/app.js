@@ -1171,13 +1171,16 @@ function updateConnIndicator() {
   if (!el) return;
   const terms = tabs.filter(t => t.kind === 'terminal' && !t.disposed);
   if (terms.length === 0) { el.textContent = ''; el.className = 'sb-item sb-conn'; return; }
+  // Only surface a terminal-specific state when something needs attention
+  // (reconnecting). When all terminals are connected there's nothing to add
+  // beyond the existing overall status, so stay silent to avoid duplication.
   const reconnecting = terms.filter(t => t.connState === 'reconnecting');
   if (reconnecting.length > 0) {
     el.textContent = `⟳ reconnecting${reconnecting.length > 1 ? ' (' + reconnecting.length + ')' : ''}`;
     el.className = 'sb-item sb-conn is-reconnecting';
   } else {
-    el.textContent = '● connected';
-    el.className = 'sb-item sb-conn is-connected';
+    el.textContent = '';
+    el.className = 'sb-item sb-conn';
   }
 }
 
@@ -1680,7 +1683,7 @@ function clearDirty() {
 }
 
 document.getElementById('save-btn').addEventListener('click', saveCurrentFile);
-document.getElementById('new-terminal-btn').addEventListener('click', newTerminal);
+document.getElementById('new-terminal-btn').addEventListener('click', () => newTerminal());
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveCurrentFile(); }
   // Ctrl/Cmd+W closes the active tab
