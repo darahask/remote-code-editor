@@ -262,6 +262,8 @@ async function restoreTabs() {
   for (const t of alive) newTerminal(t);       // each recreated under t.profileName
   for (const f of savedFiles) openFile(f.path);
   if (saved.activeTabId && getTab(saved.activeTabId)) activateTab(saved.activeTabId);
+  else if (tabs.length > 0) activateTab(tabs[0].id);
+  else showEmptyState();
 }
 
 // ---------------------------------------------------------------------------
