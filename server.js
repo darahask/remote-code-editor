@@ -434,6 +434,35 @@ app.get('/api/download-dir', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Terminal session helpers (pure — unit-tested in test/terminal.test.js)
+// ---------------------------------------------------------------------------
+
+// Session ids come from the browser and are interpolated into a tmux session
+// name inside a remote shell command, so they must be strictly validated.
+function sanitizeSessionId(raw) {
+  if (typeof raw !== 'string') return null;
+  if (raw.length === 0 || raw.length > 64) return null;
+  return /^[A-Za-z0-9_]+$/.test(raw) ? raw : null;
+}
+
+function tmuxSessionName(sessionId) {
+  return 'grv_' + sessionId;
+}
+
+// Attach-or-create: `-A` reattaches if the session exists, else creates it and
+// runs a login shell in the repo dir. On reattach the trailing command is
+// ignored, so scrollback / running processes (Claude Code) are preserved.
+function remoteTerminalCommand({ repoPath, sessionName }) {
+  const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
+  return `${cd}exec tmux new-session -A -s ${sessionName} $SHELL -l`;
+}
+
+function remoteFallbackCommand({ repoPath }) {
+  const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
+  return `${cd}exec $SHELL -l`;
+}
+
+// ---------------------------------------------------------------------------
 // Terminal (PTY-backed SSH over WebSocket)
 // ---------------------------------------------------------------------------
 
@@ -480,7 +509,20 @@ wss.on('connection', (ws, req) => {
 });
 
 const PORT = process.env.PORT || 4570;
-server.listen(PORT, () => {
-  console.log(`Git Remote Viewer → http://localhost:${PORT}`);
-  if (!activeProfileName) console.log('No profiles yet — open the UI to create one.');
-});
+
+// Only start listening when run directly (`node server.js`). When required by a
+// unit test, export the pure helpers instead of booting a server.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Git Remote Viewer → http://localhost:${PORT}`);
+    if (!activeProfileName) console.log('No profiles yet — open the UI to create one.');
+  });
+}
+
+module.exports = {
+  shQuote,
+  sanitizeSessionId,
+  tmuxSessionName,
+  remoteTerminalCommand,
+  remoteFallbackCommand,
+};
