@@ -906,32 +906,36 @@ async function openFile(filePath) {
 }
 
 async function reloadExplorerTab(tab) {
-  const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
-  const data = await res.json();
-  if (data.error) { toast(data.error); return; }
-  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
-  tab.model?.dispose();
-  tab.model = null;
-  tab.message = null;
-  if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
-  else if (data.binary) tab.message = 'Binary file — no text preview.';
-  else tab.model = monaco.editor.createModel(data.content, data.language);
-  tab.dirty = false;
-  tab.headContent = undefined; // HEAD may have moved; refetch
-  if (tab.id === activeTabId) activateTab(tab.id);
+  try {
+    const res = await fetchWithTimeout(`/api/file-content?path=${encodeURIComponent(tab.path)}`);
+    const data = await res.json();
+    if (data.error) { toast(data.error); return; }
+    if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
+    tab.model?.dispose();
+    tab.model = null;
+    tab.message = null;
+    if (data.tooLarge)   tab.message = `File too large to preview (${Math.round(data.size / 1024)} KB).`;
+    else if (data.binary) tab.message = 'Binary file — no text preview.';
+    else tab.model = monaco.editor.createModel(data.content, data.language);
+    tab.dirty = false;
+    tab.headContent = undefined; // HEAD may have moved; refetch
+    if (tab.id === activeTabId) activateTab(tab.id);
+  } catch (err) { toast('Could not reload file: ' + err.message); }
 }
 
 async function reloadDiffTab(tab) {
   const mode = tab.kind === 'diff-staged' ? 'staged' : 'unstaged';
-  const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
-  const data = await res.json();
-  if (data.error) { toast(data.error); return; }
-  if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
-  tab.origModel?.dispose(); tab.modModel?.dispose();
-  tab.origModel = monaco.editor.createModel(data.original, data.language);
-  tab.modModel  = monaco.editor.createModel(data.modified,  data.language);
-  tab.dirty = false;
-  if (tab.id === activeTabId) activateTab(tab.id);
+  try {
+    const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(tab.path)}&mode=${mode}`);
+    const data = await res.json();
+    if (data.error) { toast(data.error); return; }
+    if (!getTab(tab.id)) return;               // tab was closed mid-reload (I1)
+    tab.origModel?.dispose(); tab.modModel?.dispose();
+    tab.origModel = monaco.editor.createModel(data.original, data.language);
+    tab.modModel  = monaco.editor.createModel(data.modified,  data.language);
+    tab.dirty = false;
+    if (tab.id === activeTabId) activateTab(tab.id);
+  } catch (err) { toast('Could not reload file: ' + err.message); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,7 +1780,7 @@ function renderList(containerId, files, mode, isStaged) {
 
 async function toggleStage(filePath, isStaged) {
   try {
-    const res = await fetch(isStaged ? '/api/unstage' : '/api/stage', {
+    const res = await fetchWithTimeout(isStaged ? '/api/unstage' : '/api/stage', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath }),
     });
@@ -1795,7 +1799,7 @@ async function selectDiff(filePath, mode, rowEl, revealLine) {
   const seq = ++openSeq;
 
   try {
-    const res = await fetch(`/api/file-diff?path=${encodeURIComponent(filePath)}&mode=${mode}`);
+    const res = await fetchWithTimeout(`/api/file-diff?path=${encodeURIComponent(filePath)}&mode=${mode}`);
     const data = await res.json();
     if (data.error) { toast(data.error); return; }
 
