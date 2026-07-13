@@ -1333,17 +1333,20 @@ function queueSessionKill(profileName, sessionId) {
 async function flushPendingKills() {
   const list = loadPendingKills();
   if (list.length === 0) return;
-  const survivors = [];
+  const confirmed = new Set();
   await Promise.all(list.map(async (e) => {
     try {
       const res = await fetchWithTimeout(
         `/api/term-session?profile=${encodeURIComponent(e.profileName)}&session=${encodeURIComponent(e.sessionId)}`,
         { method: 'DELETE' }, 5000,
       );
-      if (!res.ok) survivors.push(e);          // keep for a later retry
-    } catch (_) { survivors.push(e); }         // network/abort -> keep and retry later
+      if (res.ok) confirmed.add(e.sessionId);   // only drop ids the server confirmed
+    } catch (_) { /* keep for retry — do not confirm */ }
   }));
-  savePendingKills(survivors);
+  // Re-read the CURRENT stored list so entries queued concurrently (by a close
+  // during our await) are preserved; remove only ids we confirmed killed.
+  const current = loadPendingKills();
+  savePendingKills(current.filter(e => !confirmed.has(e.sessionId)));
 }
 
 let _persistTimer = null;
