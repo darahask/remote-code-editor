@@ -530,6 +530,16 @@ function tmuxSessionName(sessionId) {
   return 'grv_' + sessionId;
 }
 
+// Force a UTF-8 *character* encoding (LC_CTYPE) so tmux and TUI apps (Claude
+// Code) render box-drawing / Unicode glyphs instead of substituting '_'. Many
+// remotes default to a non-UTF-8 LANG (e.g. en_IN); we override only the
+// encoding, leaving the language/formatting alone. Prefer C.UTF-8, else any
+// installed UTF-8 locale, else literal C.UTF-8. Set before tmux so the tmux
+// server, the pane's shell, and the attaching client all see UTF-8.
+const LOCALE_PREFIX =
+  'export LC_CTYPE="$( { locale -a 2>/dev/null | grep -ixF C.UTF-8; ' +
+  'locale -a 2>/dev/null | grep -iE \'utf-?8\'; echo C.UTF-8; } | head -1)"; ';
+
 // Attach-or-create with a stable, single-client attach:
 //  - create the session detached (login shell in the repo dir) only if missing,
 //    so scrollback / running processes (Claude Code) are preserved on reconnect;
@@ -539,14 +549,14 @@ function tmuxSessionName(sessionId) {
 //    tmux sizes the window to the CURRENT viewer, so it fills the pane.
 function remoteTerminalCommand({ repoPath, sessionName }) {
   const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
-  return `${cd}tmux has-session -t ${sessionName} 2>/dev/null || tmux new-session -d -s ${sessionName} $SHELL -l; `
+  return `${LOCALE_PREFIX}${cd}tmux has-session -t ${sessionName} 2>/dev/null || tmux new-session -d -s ${sessionName} $SHELL -l; `
        + `tmux set-option -t ${sessionName} mouse on >/dev/null 2>&1; `
        + `exec tmux attach-session -d -t ${sessionName}`;
 }
 
 function remoteFallbackCommand({ repoPath }) {
   const cd = repoPath ? `cd ${shQuote(repoPath)} 2>/dev/null; ` : '';
-  return `${cd}exec $SHELL -l`;
+  return `${LOCALE_PREFIX}${cd}exec $SHELL -l`;
 }
 
 // ---------------------------------------------------------------------------
