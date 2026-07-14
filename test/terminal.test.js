@@ -25,6 +25,8 @@ test('tmuxSessionName prefixes with grv_', () => {
 test('remoteTerminalCommand builds an attach-or-create tmux command', () => {
   const cmd = t.remoteTerminalCommand({ repoPath: '/home/me/repo', sessionName: 'grv_x' });
   assert.match(cmd, /cd '\/home\/me\/repo' 2>\/dev\/null; /);
+  // force a UTF-8 character encoding so tmux/TUI apps render Unicode glyphs
+  assert.match(cmd, /export LC_CTYPE=.*C\.UTF-8/);
   // create-if-missing (detached), enable session-scoped mouse, single-client attach
   assert.match(cmd, /tmux has-session -t grv_x 2>\/dev\/null \|\| tmux new-session -d -s grv_x \$SHELL -l/);
   assert.match(cmd, /tmux set-option -t grv_x mouse on/);
