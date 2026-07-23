@@ -299,6 +299,29 @@ app.post('/api/profiles/:name/activate', (req, res) => {
   res.json({ ok: true });
 });
 
+// Filesystem operations on tree-relative paths. Path validation runs before
+// any spawn, so malformed input can never reach a shell.
+function fsOpHandler(op, needsDest) {
+  return async (req, res) => {
+    const { src, dest } = req.body || {};
+    if (!isSafePath(src)) return res.status(400).json({ error: 'Invalid path' });
+    if (needsDest && !isSafePath(dest)) return res.status(400).json({ error: 'Invalid destination' });
+    const profile = resolveProfile(req.body && req.body.profile);
+    if (!profile || !profile.remotePath) return res.status(400).json({ error: 'No active profile.' });
+    try {
+      const result = await runWith(profile, fsCommand(op, { src, dest }));
+      if (result.code !== 0) return res.status(500).json({ error: (result.stderr || '').trim() || 'Operation failed' });
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  };
+}
+
+app.post('/api/fs/mkdir',  fsOpHandler('mkdir', false));
+app.post('/api/fs/create', fsOpHandler('create', false));
+app.post('/api/fs/delete', fsOpHandler('delete', false));
+app.post('/api/fs/rename', fsOpHandler('rename', true));
+app.post('/api/fs/copy',   fsOpHandler('copy', true));
+
 // Git
 app.get('/api/status', async (req, res) => {
   const profile = getActive();               // capture once for the whole request
