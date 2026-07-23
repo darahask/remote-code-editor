@@ -174,6 +174,23 @@ function isSafePath(p) {
   return !parts.includes('..') && !parts.includes('.');
 }
 
+// Build a shell command for a filesystem operation on tree-relative, already
+// isSafePath-validated paths. Runs under `cd <remotePath>` (see runWith), so
+// relative paths resolve inside the repo. rename/copy refuse to clobber an
+// existing destination. Throws on an unknown op.
+function fsCommand(op, { src, dest } = {}) {
+  const s = shQuote(src);
+  const d = dest != null ? shQuote(dest) : null;
+  switch (op) {
+    case 'mkdir':  return `mkdir -p ${s}`;
+    case 'create': return `if [ -e ${s} ]; then echo 'File already exists' >&2; exit 1; fi; : > ${s}`;
+    case 'delete': return `rm -rf ${s}`;
+    case 'rename': return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; mv ${s} ${d}`;
+    case 'copy':   return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; cp -r ${s} ${d}`;
+    default: throw new Error(`Unknown fs op: ${op}`);
+  }
+}
+
 function guessLanguage(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   return ({
@@ -646,4 +663,5 @@ module.exports = {
   tmuxSessionName,
   remoteTerminalCommand,
   remoteFallbackCommand,
+  fsCommand,
 };
