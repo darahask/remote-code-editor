@@ -182,11 +182,13 @@ function fsCommand(op, { src, dest } = {}) {
   const s = shQuote(src);
   const d = dest != null ? shQuote(dest) : null;
   switch (op) {
-    case 'mkdir':  return `mkdir -p ${s}`;
+    // `--` ends option parsing so a path beginning with `-` (e.g. a file named
+    // "-rf") is treated as an operand, never a flag.
+    case 'mkdir':  return `mkdir -p -- ${s}`;
     case 'create': return `if [ -e ${s} ]; then echo 'File already exists' >&2; exit 1; fi; : > ${s}`;
-    case 'delete': return `rm -rf ${s}`;
-    case 'rename': return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; mv ${s} ${d}`;
-    case 'copy':   return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; cp -r ${s} ${d}`;
+    case 'delete': return `rm -rf -- ${s}`;
+    case 'rename': return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; mv -- ${s} ${d}`;
+    case 'copy':   return `if [ -e ${d} ]; then echo 'Target already exists' >&2; exit 1; fi; cp -r -- ${s} ${d}`;
     default: throw new Error(`Unknown fs op: ${op}`);
   }
 }
