@@ -391,6 +391,7 @@ html[data-theme="dark"] body::before {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 #tree-container.root-drop { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 8px; }
+.tree-row.drag-over { background: var(--accent, #094771); outline: 1px solid #3794ff; }
 
 .tree-name .dir {
   color: var(--text-xs);

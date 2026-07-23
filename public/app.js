@@ -242,6 +242,19 @@ async function init() {
     if (e.target.closest('.tree-row')) return;      // row menus handle their own
     showTreeContextMenu(e, '', true);               // '' = repo root
   });
+
+  // Dropping an internal drag on empty tree space (not on a row) moves the
+  // dragged entry to the repo root. Bound once here for the same reason as
+  // the contextmenu listener above — row handlers are rebuilt every render.
+  const tcDrag = document.getElementById('tree-container');
+  tcDrag.addEventListener('dragover', e => {
+    if (e.dataTransfer.types.includes('text/grv-path')) e.preventDefault();
+  });
+  tcDrag.addEventListener('drop', async e => {
+    if (e.target.closest('.tree-row')) return;      // folder rows handle their own
+    e.preventDefault();
+    await moveByDrag(e.dataTransfer.getData('text/grv-path'), '');
+  });
 }
 
 // Each terminal is restored under its own bound profile (not just the active
@@ -623,6 +636,11 @@ function renderNodes(nodes, container, depth, parentPath) {
       row.className = 'tree-row tree-dir' + (node.ignored ? ' ignored' : '');
       row.style.paddingLeft = `${6 + depth * 14}px`;
       row.dataset.path = fullPath;
+      row.draggable = true;
+      row.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/grv-path', fullPath);
+        e.dataTransfer.effectAllowed = 'move';
+      });
 
       const isExpanded = expandedDirs.has(fullPath);
       const twist = document.createElement('span');
@@ -684,11 +702,25 @@ function renderNodes(nodes, container, depth, parentPath) {
 
       if (fullPath === selectedDir) row.classList.add('dir-selected');
       attachDropZone(row, fullPath, openDir);
+      row.addEventListener('dragover', e => {
+        if (!e.dataTransfer.types.includes('text/grv-path')) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'move'; row.classList.add('drag-over');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('drop', async e => {
+        e.preventDefault(); e.stopPropagation(); row.classList.remove('drag-over');
+        await moveByDrag(e.dataTransfer.getData('text/grv-path'), fullPath);
+      });
     } else {
       const row = document.createElement('div');
       row.className = 'tree-row tree-file' + (node.ignored ? ' ignored' : '');
       row.style.paddingLeft = `${6 + depth * 14}px`;
       row.dataset.path = node.path;
+      row.draggable = true;
+      row.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/grv-path', node.path);
+        e.dataTransfer.effectAllowed = 'move';
+      });
       if (currentOpenKind === 'explorer' && currentOpenPath === node.path) row.classList.add('selected');
 
       const twistSpacer = document.createElement('span');
@@ -835,6 +867,16 @@ async function pasteInto(dirPath) {
     if (dirPath) expandedDirs.add(dirPath);
     await refreshTreePreservingState(); revealInTree(dest); loadStatus();
   }
+}
+
+// Move src (a full tree path) into targetDir ('' = repo root) via drag-drop.
+async function moveByDrag(src, targetDir) {
+  if (!src) return;
+  if (TabState.parentDir(src) === targetDir) return;               // already there
+  if (TabState.isDescendantPath(src, targetDir)) { toast("Can't move a folder into itself"); return; }
+  const dest = TabState.joinPath(targetDir, TabState.basename(src));
+  const r = await fsRequest('rename', { src, dest });
+  if (r.ok) { if (targetDir) expandedDirs.add(targetDir); await refreshTreePreservingState(); revealInTree(dest); loadStatus(); }
 }
 
 // Copy an entry next to itself with a " copy" suffix.
