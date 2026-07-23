@@ -817,6 +817,37 @@ function renameEntry(path, isDir) {
   }});
 }
 
+let treeClipboard = null;   // { mode: 'cut' | 'copy', path }
+
+function cutEntry(path)  { treeClipboard = { mode: 'cut',  path }; toast('Cut'); }
+function copyEntry(path) { treeClipboard = { mode: 'copy', path }; toast('Copied'); }
+
+// Move or copy the clipboard entry into dirPath (''=root).
+async function pasteInto(dirPath) {
+  if (!treeClipboard) return;
+  const { mode, path } = treeClipboard;
+  const dest = TabState.joinPath(dirPath, TabState.basename(path));
+  if (dest === path) { toast('Already there'); return; }
+  if (mode === 'cut' && TabState.isDescendantPath(path, dirPath)) { toast("Can't move a folder into itself"); return; }
+  const r = await fsRequest(mode === 'cut' ? 'rename' : 'copy', { src: path, dest });
+  if (r.ok) {
+    if (mode === 'cut') treeClipboard = null;
+    if (dirPath) expandedDirs.add(dirPath);
+    await refreshTreePreservingState(); revealInTree(dest); loadStatus();
+  }
+}
+
+// Copy an entry next to itself with a " copy" suffix.
+async function duplicateEntry(path) {
+  const dir = TabState.parentDir(path);
+  const siblings = allFiles
+    .filter(f => TabState.parentDir(f) === dir)
+    .map(f => TabState.basename(f));
+  const dest = TabState.joinPath(dir, TabState.duplicateName(TabState.basename(path), siblings));
+  const r = await fsRequest('copy', { src: path, dest });
+  if (r.ok) { await refreshTreePreservingState(); revealInTree(dest); }
+}
+
 function showTreeContextMenu(e, path, isDir) {
   e.preventDefault();
   e.stopPropagation();
@@ -827,7 +858,10 @@ function showTreeContextMenu(e, path, isDir) {
       { separator: true },
     ] : []),
     { label: 'Rename', action: () => renameEntry(path, isDir), disabled: !path },
-    // clipboard items are inserted by Task 8
+    { label: 'Cut', action: () => cutEntry(path), disabled: !path },
+    { label: 'Copy', action: () => copyEntry(path), disabled: !path },
+    { label: 'Paste', action: () => pasteInto(isDir ? path : TabState.parentDir(path)), disabled: !treeClipboard },
+    { label: 'Duplicate', action: () => duplicateEntry(path), disabled: !path },
     { label: 'Copy Path', action: () => copyToClipboard(absoluteRemotePath(path)) },
     { label: 'Copy Relative Path', action: () => copyToClipboard(path) },
     { separator: true },
