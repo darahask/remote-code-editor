@@ -1065,3 +1065,9 @@ html[data-theme="dark"] body::before {
 .ctx-item.danger { color: #f48771; }
 .ctx-item.disabled { opacity: .4; pointer-events: none; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.1); }
+
+/* ── Tree inline input (new file / new folder / rename) ────────── */
+.tree-inline-input { padding: 2px 6px; }
+.tree-inline-input input { width: 100%; box-sizing: border-box; font: inherit;
+  padding: 2px 6px; background: var(--input-bg, #1e1e1e); color: inherit;
+  border: 1px solid var(--accent, #094771); border-radius: 3px; outline: none; }

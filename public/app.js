@@ -767,11 +767,67 @@ async function copyToClipboard(text) {
   catch (_) { toast('Copy failed'); }
 }
 
+// Show a temporary text input in the tree to capture a name. onCommit(value)
+// runs on Enter (non-empty); Escape/blur cancels. Suppresses tree polling
+// while open so a refresh can't destroy the input.
+function beginInlineInput({ initial = '', placeholder = '', onCommit }) {
+  treeInlineEditActive = true;
+  const overlay = document.createElement('div');
+  overlay.className = 'tree-inline-input';
+  const input = document.createElement('input');
+  input.type = 'text'; input.value = initial; input.placeholder = placeholder;
+  overlay.appendChild(input);
+  document.getElementById('tree-container').prepend(overlay);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return; done = true;
+    treeInlineEditActive = false;
+    const val = input.value.trim();
+    overlay.remove();
+    if (commit && val) onCommit(val);
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(false));
+}
+
+function newFile(dirPath) {
+  beginInlineInput({ placeholder: 'New file name…', onCommit: async name => {
+    const dest = TabState.joinPath(dirPath, name);
+    const r = await fsRequest('create', { src: dest });
+    if (r.ok) { const parts = dest.split('/'); parts.pop(); if (parts.length) expandedDirs.add(parts.join('/')); await refreshTreePreservingState(); revealInTree(dest); }
+  }});
+}
+function newFolder(dirPath) {
+  beginInlineInput({ placeholder: 'New folder name…', onCommit: async name => {
+    const dest = TabState.joinPath(dirPath, name);
+    const r = await fsRequest('mkdir', { src: dest });
+    if (r.ok) { expandedDirs.add(dest); await refreshTreePreservingState(); revealInTree(dest); }
+  }});
+}
+function renameEntry(path, isDir) {
+  beginInlineInput({ initial: TabState.basename(path), onCommit: async name => {
+    const dest = TabState.joinPath(TabState.parentDir(path), name);
+    if (dest === path) return;
+    const r = await fsRequest('rename', { src: path, dest });
+    if (r.ok) { await refreshTreePreservingState(); revealInTree(dest); loadStatus(); }
+  }});
+}
+
 function showTreeContextMenu(e, path, isDir) {
   e.preventDefault();
   e.stopPropagation();
   const items = [
-    // create/rename/clipboard items are inserted by Tasks 7-8
+    ...(isDir ? [
+      { label: 'New File', action: () => newFile(path) },
+      { label: 'New Folder', action: () => newFolder(path) },
+      { separator: true },
+    ] : []),
+    { label: 'Rename', action: () => renameEntry(path, isDir), disabled: !path },
+    // clipboard items are inserted by Task 8
     { label: 'Copy Path', action: () => copyToClipboard(absoluteRemotePath(path)) },
     { label: 'Copy Relative Path', action: () => copyToClipboard(path) },
     { separator: true },
