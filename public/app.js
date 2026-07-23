@@ -24,6 +24,9 @@ let allFiles = [];
 let showIgnored = false;
 let selectedDir = '';                // folder targeted by Ctrl+V paste ('' = repo root)
 const expandedDirs = new Set();
+let treeInlineEditActive = false;   // true while an inline rename/new-file input is open
+let treePollTimer = null;
+let treePollInFlight = false;
 let currentGitSelection = null;
 let profileState = { profiles: {}, active: null }; // cached, no re-fetch on panel open
 let currentIsMarkdown = false;
@@ -211,6 +214,7 @@ function fetchWithTimeout(url, opts = {}, ms = 8000) {
 async function init() {
   flushPendingKills();     // retry any session kills queued from a prior session
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
+  startTreePolling();
   loadTree();
   loadStatus();
   restoreTabs();          // recreate saved tabs (terminals re-attach via tmux)
@@ -508,6 +512,46 @@ function renderTree() {
   const container = document.getElementById('tree-container');
   container.innerHTML = '';
   if (treeData) renderNodes(treeData, container, 0, '');
+}
+
+// Re-fetch the tree and re-render without losing the user's place: keep
+// expanded folders (expandedDirs is already module state), the tree scroll
+// position, and the current selection. Skipped while an inline edit is open.
+async function refreshTreePreservingState() {
+  if (treeInlineEditActive) return;
+  const container = document.getElementById('tree-container');
+  const scrollTop = container ? container.scrollTop : 0;
+  const selectedPath = document.querySelector('#tree-container .tree-row.selected')?.dataset.path || null;
+  try {
+    const res = await fetchWithTimeout(`/api/tree${showIgnored ? '?all=1' : ''}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.error) return;
+    allFiles = data.files;
+    treeData = data.tree;
+    renderTree();
+    if (selectedPath) {
+      const row = treeRowByPath(selectedPath);
+      if (row) row.classList.add('selected');
+    }
+    if (container) container.scrollTop = scrollTop;
+  } catch (_) { /* offline / transient — next tick retries */ }
+}
+
+const TREE_POLL_MS = 10000;
+
+// Poll tree + git status so remote changes appear without a manual refresh.
+// Pauses when the tab is hidden or offline; coalesces overlapping polls.
+function startTreePolling() {
+  if (treePollTimer) return;
+  treePollTimer = setInterval(async () => {
+    if (document.hidden || !navigator.onLine) return;
+    if (!profileState.active) return;
+    if (treePollInFlight) return;
+    treePollInFlight = true;
+    try { await Promise.all([refreshTreePreservingState(), loadStatus()]); }
+    finally { treePollInFlight = false; }
+  }, TREE_POLL_MS);
 }
 
 function treeRowByPath(path) {
