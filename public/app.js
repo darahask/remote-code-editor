@@ -29,6 +29,7 @@ let treePollTimer = null;
 let treePollInFlight = false;
 let currentGitSelection = null;
 let profileState = { profiles: {}, active: null }; // cached, no re-fetch on panel open
+let statusRemotePath = ''; // remote repo root, set by loadStatus() — used to build absolute paths
 let currentIsMarkdown = false;
 let previewMode = false;
 
@@ -211,6 +212,20 @@ function fetchWithTimeout(url, opts = {}, ms = 8000) {
   return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
 }
 
+// POST a filesystem op to the server, scoped to the active profile.
+async function fsRequest(op, body) {
+  try {
+    const res = await fetchWithTimeout(`/api/fs/${op}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, profile: profileState.active || '' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) { toast(data.error || `Could not ${op}`); return { error: data.error || true }; }
+    return { ok: true };
+  } catch (err) { toast(err.message); return { error: err.message }; }
+}
+
 async function init() {
   flushPendingKills();     // retry any session kills queued from a prior session
   await loadProfiles();   // load profiles first, then fire tree+status in parallel
@@ -219,6 +234,14 @@ async function init() {
   loadStatus();
   restoreTabs();          // recreate saved tabs (terminals re-attach via tmux)
   startHeartbeat();       // keep the connection label live from here on
+
+  // Right-click on empty tree space (not on a row) opens the menu rooted at
+  // the repo root. Bound once here — renderTree() rebuilds rows, not the
+  // container itself, so binding inside it would stack duplicate listeners.
+  document.getElementById('tree-container').addEventListener('contextmenu', e => {
+    if (e.target.closest('.tree-row')) return;      // row menus handle their own
+    showTreeContextMenu(e, '', true);               // '' = repo root
+  });
 }
 
 // Each terminal is restored under its own bound profile (not just the active
@@ -624,6 +647,7 @@ function renderNodes(nodes, container, depth, parentPath) {
       dirDl.innerHTML = ICONS.download;
       dirDl.addEventListener('click', (e) => { e.stopPropagation(); downloadDir(fullPath); });
       row.appendChild(dirDl);
+      row.addEventListener('contextmenu', e => showTreeContextMenu(e, fullPath, true));
       frag.appendChild(row);
 
       const childContainer = document.createElement('div');
@@ -695,10 +719,74 @@ function renderNodes(nodes, container, depth, parentPath) {
       dl.addEventListener('click', (e) => { e.stopPropagation(); downloadFile(node.path); });
       row.appendChild(dl);
       row.addEventListener('click', () => openFile(node.path));
+      row.addEventListener('contextmenu', e => showTreeContextMenu(e, node.path, false));
       frag.appendChild(row);
     }
   }
   container.appendChild(frag);
+}
+
+// ---------------------------------------------------------------------------
+// Tree context menu (right-click)
+// ---------------------------------------------------------------------------
+
+// A single reusable context menu. items: [{label, action, danger}] or {separator:true}.
+function showContextMenu(x, y, items) {
+  hideContextMenu();
+  const menu = document.createElement('div');
+  menu.id = 'tree-context-menu';
+  menu.className = 'ctx-menu';
+  for (const it of items) {
+    if (it.separator) { const s = document.createElement('div'); s.className = 'ctx-sep'; menu.appendChild(s); continue; }
+    const row = document.createElement('div');
+    row.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.disabled ? ' disabled' : '');
+    row.textContent = it.label;
+    if (!it.disabled) row.addEventListener('click', () => { hideContextMenu(); it.action(); });
+    menu.appendChild(row);
+  }
+  document.body.appendChild(menu);
+  // clamp to viewport
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 4) + 'px';
+  menu.style.top  = Math.min(y, window.innerHeight - rect.height - 4) + 'px';
+}
+function hideContextMenu() {
+  document.getElementById('tree-context-menu')?.remove();
+}
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('scroll', hideContextMenu, true);
+window.addEventListener('resize', hideContextMenu);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideContextMenu(); });
+
+function absoluteRemotePath(rel) {
+  const base = (statusRemotePath || '').replace(/\/+$/, '');   // set by loadStatus()
+  return base ? `${base}/${rel}` : rel;
+}
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); toast('Copied'); }
+  catch (_) { toast('Copy failed'); }
+}
+
+function showTreeContextMenu(e, path, isDir) {
+  e.preventDefault();
+  e.stopPropagation();
+  const items = [
+    // create/rename/clipboard items are inserted by Tasks 7-8
+    { label: 'Copy Path', action: () => copyToClipboard(absoluteRemotePath(path)) },
+    { label: 'Copy Relative Path', action: () => copyToClipboard(path) },
+    { separator: true },
+    { label: 'Download', action: () => isDir ? downloadDir(path) : downloadFile(path) },
+    { label: 'Reveal in Explorer', action: () => revealInTree(path) },
+    { separator: true },
+    { label: 'Delete', danger: true, action: () => deleteEntry(path, isDir) },
+  ];
+  showContextMenu(e.clientX, e.clientY, items);
+}
+
+async function deleteEntry(path, isDir) {
+  if (!confirm(`Delete ${isDir ? 'folder' : 'file'} "${TabState.basename(path)}"?${isDir ? '\nThis removes all its contents.' : ''}`)) return;
+  const r = await fsRequest('delete', { src: path });
+  if (r.ok) { toast('Deleted'); await refreshTreePreservingState(); loadStatus(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1878,6 +1966,8 @@ async function loadStatus() {
     if (!res.ok) return;
     const data = await res.json();
     if (data.error) return;
+
+    statusRemotePath = data.remotePath || statusRemotePath;
 
     document.getElementById('sb-branch').textContent = data.branch || '—';
     document.getElementById('sb-path').textContent = data.remotePath || '—';

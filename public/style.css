@@ -1055,3 +1055,13 @@ html[data-theme="dark"] body::before {
 
 /* ── Theme toggle button (status bar) ─────────────── */
 #theme-btn { font-size: 13px; }
+
+/* ── Tree context menu ─────────────────────────────── */
+.ctx-menu { position: fixed; z-index: 9999; min-width: 190px; padding: 4px;
+  background: var(--panel, #252526); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.4); font-size: 13px; }
+.ctx-item { padding: 5px 12px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.ctx-item:hover { background: var(--accent, #094771); }
+.ctx-item.danger { color: #f48771; }
+.ctx-item.disabled { opacity: .4; pointer-events: none; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.1); }
