@@ -30,5 +30,38 @@
     return { alive, dead };
   }
 
-  return { nextBackoffDelay, serializeTabs, reconcileTerminalTabs };
+  function basename(p) {
+    const s = String(p).replace(/\/+$/, '');
+    const i = s.lastIndexOf('/');
+    return i === -1 ? s : s.slice(i + 1);
+  }
+
+  function parentDir(p) {
+    const s = String(p).replace(/\/+$/, '');
+    const i = s.lastIndexOf('/');
+    return i === -1 ? '' : s.slice(0, i);
+  }
+
+  function joinPath(dir, name) {
+    return dir ? `${dir}/${name}` : String(name);
+  }
+
+  function isDescendantPath(ancestor, p) {
+    if (!ancestor) return true;              // root contains everything
+    return p === ancestor || p.startsWith(ancestor + '/');
+  }
+
+  function duplicateName(name, existingNames) {
+    const set = new Set(existingNames || []);
+    const dot = name.lastIndexOf('.');
+    const hasExt = dot > 0;
+    const stem = hasExt ? name.slice(0, dot) : name;
+    const ext  = hasExt ? name.slice(dot) : '';
+    let candidate = `${stem} copy${ext}`, n = 2;
+    while (set.has(candidate)) { candidate = `${stem} copy ${n}${ext}`; n++; }
+    return candidate;
+  }
+
+  return { nextBackoffDelay, serializeTabs, reconcileTerminalTabs,
+           basename, parentDir, joinPath, isDescendantPath, duplicateName };
 });

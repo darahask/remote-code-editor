@@ -35,3 +35,33 @@ test('reconcileTerminalTabs splits alive vs dead by live session ids', () => {
   assert.deepStrictEqual(alive.map(t => t.sessionId), ['a']);
   assert.deepStrictEqual(dead.map(t => t.sessionId), ['b']);
 });
+
+test('basename returns the last path segment', () => {
+  assert.strictEqual(TS.basename('a/b/c.txt'), 'c.txt');
+  assert.strictEqual(TS.basename('c.txt'), 'c.txt');
+  assert.strictEqual(TS.basename('a/b/'), 'b');
+});
+
+test('parentDir returns the directory, empty at root', () => {
+  assert.strictEqual(TS.parentDir('a/b/c.txt'), 'a/b');
+  assert.strictEqual(TS.parentDir('c.txt'), '');
+});
+
+test('joinPath joins, treating empty dir as root', () => {
+  assert.strictEqual(TS.joinPath('a/b', 'c.txt'), 'a/b/c.txt');
+  assert.strictEqual(TS.joinPath('', 'c.txt'), 'c.txt');
+});
+
+test('isDescendantPath: root contains all; node contains self and children', () => {
+  assert.strictEqual(TS.isDescendantPath('', 'a/b'), true);
+  assert.strictEqual(TS.isDescendantPath('a', 'a'), true);
+  assert.strictEqual(TS.isDescendantPath('a', 'a/b'), true);
+  assert.strictEqual(TS.isDescendantPath('a', 'ab'), false);
+  assert.strictEqual(TS.isDescendantPath('a/b', 'a'), false);
+});
+
+test('duplicateName inserts " copy" before the extension and dedupes', () => {
+  assert.strictEqual(TS.duplicateName('f.txt', []), 'f copy.txt');
+  assert.strictEqual(TS.duplicateName('f.txt', ['f copy.txt']), 'f copy 2.txt');
+  assert.strictEqual(TS.duplicateName('dir', ['dir copy']), 'dir copy 2');
+});
