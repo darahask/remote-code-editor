@@ -64,6 +64,15 @@ function sshBaseTerminalArgs(profile) {
     '-o', 'ControlMaster=auto',
     '-o', `ControlPath=${ctlPath(profile)}`,
     '-o', 'ControlPersist=120',
+    // Detect a dropped/hung network (e.g. a VPN switch) instead of the ssh
+    // client blocking forever on a half-open connection: give up after ~15s of
+    // silence (5s × 3) so the pty closes, the browser WebSocket fires onclose,
+    // and the client's reconnect loop actually runs.
+    '-o', 'ServerAliveInterval=5',
+    '-o', 'ServerAliveCountMax=3',
+    // A reconnect attempt made while the remote is still unreachable should
+    // fail fast rather than hang.
+    '-o', 'ConnectTimeout=10',
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
   args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);

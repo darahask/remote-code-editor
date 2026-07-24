@@ -351,26 +351,61 @@ function setStatus(msg, kind = '') {
 }
 
 // Live connection heartbeat: keep the status label honest by probing the
-// remote every HEARTBEAT_MS instead of only on sidebar refresh, so a dropped
-// connection shows within ~one interval rather than staying stale "Connected".
-const HEARTBEAT_MS = 25000;
+// remote, and — crucially — actively drive terminal reconnection from it. On a
+// VPN/network change the browser 'online' event never fires (the interface
+// stays up) and a half-open terminal socket may never fire onclose, so without
+// this the app would show "Disconnected" forever and never retry. While healthy
+// we probe slowly; the moment a probe fails we speed up and kick reconnection,
+// so recovery is detected within a few seconds.
+const HEARTBEAT_MS = 25000;        // cadence while connected
+const HEARTBEAT_FAST_MS = 5000;    // cadence while disconnected (probe + retry harder)
 let _heartbeatTimer = null;
+let _connWasOk = true;
 
 async function checkConnection() {
   if (!profileState.active) return;   // nothing to probe
   if (document.hidden) return;        // don't spend SSH pings while the tab is hidden
+  let ok = false;
   try {
     const res = await fetchWithTimeout('/api/ping', {}, 8000);
     const data = await res.json().catch(() => ({ ok: false }));
-    setStatus(data.ok ? 'Connected' : 'Disconnected', data.ok ? 'ok' : 'error');
-  } catch (_) {
-    setStatus('Disconnected', 'error');
+    ok = !!data.ok;
+  } catch (_) { ok = false; }
+  setStatus(ok ? 'Connected' : 'Disconnected', ok ? 'ok' : 'error');
+  if (ok) {
+    // Recovered: revive any terminal whose socket is hung or is waiting out a
+    // long backoff delay — reconnect them immediately.
+    if (!_connWasOk) reconnectAllTerminals();
+  } else {
+    // Down: a half-open terminal socket can sit in OPEN forever without firing
+    // onclose. Force it closed so its onclose handler starts the reconnect loop.
+    kickStaleTerminals();
+  }
+  _connWasOk = ok;
+}
+
+// Force-close terminal sockets the heartbeat has proven dead (the remote is
+// unreachable, so a socket still reporting OPEN is half-open). Closing it fires
+// onclose, which schedules the backoff reconnect.
+function kickStaleTerminals() {
+  for (const tab of tabs) {
+    if (tab.kind !== 'terminal' || tab.disposed) continue;
+    if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+      try { tab.ws.close(); } catch (_) {}
+    }
   }
 }
 
+// Self-rescheduling so the cadence can adapt: fast while disconnected, slow
+// while healthy.
 function startHeartbeat() {
   if (_heartbeatTimer) return;
-  _heartbeatTimer = setInterval(checkConnection, HEARTBEAT_MS);
+  const tick = async () => {
+    await checkConnection();
+    clearTimeout(_heartbeatTimer);
+    _heartbeatTimer = setTimeout(tick, _connWasOk ? HEARTBEAT_MS : HEARTBEAT_FAST_MS);
+  };
+  _heartbeatTimer = setTimeout(tick, HEARTBEAT_MS);
 }
 
 function updateStatusBar() {
