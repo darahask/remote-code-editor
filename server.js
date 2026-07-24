@@ -9,6 +9,10 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 
+// Timestamped server log line (lands in grv.log). Keep terse — this is an
+// operational breadcrumb trail for diagnosing terminal/ssh connectivity.
+function slog(...args) { console.log(new Date().toISOString(), ...args); }
+
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------
@@ -42,6 +46,21 @@ function ctlPath(profile) {
   return path.join(os.tmpdir(), `grv-ctl-${key}`);
 }
 
+// Keep every ssh connection — above all a shared ControlMaster — from wedging
+// on a dropped/hung network (e.g. a VPN switch). Without this, a master whose
+// TCP silently died stays alive holding its socket, and every multiplexed
+// client after it (terminal, tree, tmux probe) hangs forever on that socket —
+// ConnectTimeout can't help because connecting to the local socket succeeds.
+// ServerAlive makes the connection self-terminate after ~15s (5s × 3) of
+// silence so the master dies and is recreated; ConnectTimeout bounds a fresh
+// connect. Applied to BOTH arg builders so whichever ssh creates the master
+// gives it a keepalive.
+const SSH_KEEPALIVE = [
+  '-o', 'ServerAliveInterval=5',
+  '-o', 'ServerAliveCountMax=3',
+  '-o', 'ConnectTimeout=10',
+];
+
 function sshArgs(profile) {
   const args = [
     '-o', 'BatchMode=yes',
@@ -49,6 +68,7 @@ function sshArgs(profile) {
     '-o', 'ControlMaster=auto',
     '-o', `ControlPath=${ctlPath(profile)}`,
     '-o', 'ControlPersist=120',
+    ...SSH_KEEPALIVE,
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
   args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
@@ -64,15 +84,10 @@ function sshBaseTerminalArgs(profile) {
     '-o', 'ControlMaster=auto',
     '-o', `ControlPath=${ctlPath(profile)}`,
     '-o', 'ControlPersist=120',
-    // Detect a dropped/hung network (e.g. a VPN switch) instead of the ssh
-    // client blocking forever on a half-open connection: give up after ~15s of
-    // silence (5s × 3) so the pty closes, the browser WebSocket fires onclose,
-    // and the client's reconnect loop actually runs.
-    '-o', 'ServerAliveInterval=5',
-    '-o', 'ServerAliveCountMax=3',
-    // A reconnect attempt made while the remote is still unreachable should
-    // fail fast rather than hang.
-    '-o', 'ConnectTimeout=10',
+    // Keepalive so a dropped/hung network closes the pty (fires the browser
+    // WebSocket's onclose → reconnect) instead of blocking forever. Same set as
+    // sshArgs so the master always has a keepalive regardless of which ssh made it.
+    ...SSH_KEEPALIVE,
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
   args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host);
@@ -90,25 +105,29 @@ function probeTmux(profile) {
   const key = profileKey(profile);
   if (_tmuxCache.has(key)) return Promise.resolve(_tmuxCache.get(key));
   return new Promise((resolve) => {
+    const t0 = Date.now();
     const proc = spawn('ssh', [...sshArgs(profile), 'command -v tmux >/dev/null 2>&1 && echo yes || echo no']);
-    let out = '';
+    let out = '', done = false;
+    const finish = (val, why) => {
+      if (done) return; done = true; clearTimeout(timer);
+      slog(`probeTmux ${key} -> ${val} (${why}, ${Date.now() - t0}ms)`);
+      resolve(val);
+    };
+    // Hard backstop: a wedged ControlMaster can hang a multiplexed probe
+    // indefinitely (ConnectTimeout doesn't bound it), which would freeze
+    // terminal startup. Kill and fall back rather than hang forever.
+    const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} finish(false, 'timeout'); }, 12000);
     proc.stdout.on('data', d => { out += d.toString(); });
     proc.on('close', (code) => {
       // Only cache a definitive answer. A blip in the ssh connection itself
-      // (non-zero exit, no recognizable token) must NOT be cached as "no
-      // tmux" — that would permanently downgrade the host to one-shot shells
-      // until the server restarts. Re-probe next time instead.
-      if (out.includes('yes')) {
-        _tmuxCache.set(key, true);
-        resolve(true);
-      } else if (out.includes('no') && code === 0) {
-        _tmuxCache.set(key, false);
-        resolve(false);
-      } else {
-        resolve(false);
-      }
+      // (non-zero exit, no recognizable token, timeout) must NOT be cached as
+      // "no tmux" — that would permanently downgrade the host to one-shot
+      // shells until the server restarts. Re-probe next time instead.
+      if (out.includes('yes')) { _tmuxCache.set(key, true); finish(true, 'yes'); }
+      else if (out.includes('no') && code === 0) { _tmuxCache.set(key, false); finish(false, 'no'); }
+      else finish(false, `indeterminate code=${code}`);
     });
-    proc.on('error', () => { resolve(false); });
+    proc.on('error', (e) => finish(false, 'error:' + e.message));
   });
 }
 
@@ -633,7 +652,10 @@ function remoteFallbackCommand({ repoPath }) {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/terminal' });
 
+let _termConnSeq = 0;
+
 wss.on('connection', async (ws, req) => {
+  const cid = ++_termConnSeq;                 // short id to correlate log lines
   const url = new URL(req.url, 'http://localhost');
   const cols = parseInt(url.searchParams.get('cols'), 10) || 80;
   const rows = parseInt(url.searchParams.get('rows'), 10) || 24;
@@ -643,18 +665,20 @@ wss.on('connection', async (ws, req) => {
   const profileName = url.searchParams.get('profile');
   const profile = (profileName && profiles[profileName]) || getActive();
   if (!profile || !profile.host) {
+    slog(`term#${cid} rejected: no active profile`);
     ws.send('\r\n\x1b[31mNo active profile. Create one first.\x1b[0m\r\n');
     ws.close();
     return;
   }
 
   const sessionId = sanitizeSessionId(url.searchParams.get('session'));
+  slog(`term#${cid} connect profile=${profileName || '(active)'} host=${profileKey(profile)} session=${sessionId || '(none)'} ${cols}x${rows}`);
 
   let hasTmux = false;
   try { hasTmux = sessionId ? await probeTmux(profile) : false; } catch (_) { hasTmux = false; }
 
   // The socket may have closed while we were probing.
-  if (ws.readyState !== ws.OPEN) return;
+  if (ws.readyState !== ws.OPEN) { slog(`term#${cid} client gone during probe`); return; }
 
   const repoPath = profile.remotePath || '';
   const remoteCmd = hasTmux
@@ -675,13 +699,19 @@ wss.on('connection', async (ws, req) => {
       env: process.env,
     });
   } catch (err) {
+    slog(`term#${cid} pty.spawn failed: ${err.message}`);
     ws.send(`\r\n\x1b[31mFailed to start terminal: ${err.message}\x1b[0m\r\n`);
     ws.close();
     return;
   }
+  slog(`term#${cid} pty spawned (tmux=${hasTmux}) pid=${term.pid}`);
 
-  term.onData((data) => { try { ws.send(data); } catch (_) {} });
-  term.onExit(() => { try { ws.close(); } catch (_) {} });
+  let bytes = 0;
+  term.onData((data) => { bytes += data.length; try { ws.send(data); } catch (_) {} });
+  term.onExit(({ exitCode, signal }) => {
+    slog(`term#${cid} ssh exited code=${exitCode} signal=${signal} afterBytes=${bytes}`);
+    try { ws.close(); } catch (_) {}
+  });
 
   ws.on('message', (raw) => {
     let msg;
@@ -692,7 +722,7 @@ wss.on('connection', async (ws, req) => {
 
   // Killing the local ssh only detaches the tmux client; the remote session (and
   // Claude Code) keeps running and is re-attached on the next connection.
-  ws.on('close', () => { try { term.kill(); } catch (_) {} });
+  ws.on('close', () => { slog(`term#${cid} ws closed (afterBytes=${bytes})`); try { term.kill(); } catch (_) {} });
 });
 
 const PORT = process.env.PORT || 4570;
