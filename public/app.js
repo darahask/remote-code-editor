@@ -556,7 +556,6 @@ function renderTree() {
 async function refreshTreePreservingState() {
   if (treeInlineEditActive) return;
   const container = document.getElementById('tree-container');
-  const scrollTop = container ? container.scrollTop : 0;
   const selectedPath = document.querySelector('#tree-container .tree-row.selected')?.dataset.path || null;
   try {
     const res = await fetchWithTimeout(`/api/tree${showIgnored ? '?all=1' : ''}`);
@@ -565,6 +564,10 @@ async function refreshTreePreservingState() {
     if (data.error) return;
     allFiles = data.files;
     treeData = data.tree;
+    // Read scrollTop here, not before the fetch: /api/tree runs over SSH and
+    // can take a while, and the user may have kept scrolling during that
+    // gap. Snapshotting early would snap them back to a stale position.
+    const scrollTop = container ? container.scrollTop : 0;
     renderTree();
     if (selectedPath) {
       const row = treeRowByPath(selectedPath);
