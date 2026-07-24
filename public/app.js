@@ -358,7 +358,7 @@ function setStatus(msg, kind = '') {
 // we probe slowly; the moment a probe fails we speed up and kick reconnection,
 // so recovery is detected within a few seconds.
 const HEARTBEAT_MS = 25000;        // cadence while connected
-const HEARTBEAT_FAST_MS = 5000;    // cadence while disconnected (probe + retry harder)
+const HEARTBEAT_FAST_MS = 2500;    // cadence while disconnected — probe often so recovery is near-instant
 let _heartbeatTimer = null;
 let _connWasOk = true;
 

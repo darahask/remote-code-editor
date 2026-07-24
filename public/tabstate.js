@@ -4,7 +4,7 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api; // node
   root.TabState = api;                                                        // browser
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const MAX_BACKOFF_MS = 10000;
+  const MAX_BACKOFF_MS = 3000;   // cap low: reconnect is lossless (tmux), so retry often for fast recovery
 
   function nextBackoffDelay(attempt) {
     return Math.min(1000 * Math.pow(2, attempt), MAX_BACKOFF_MS);

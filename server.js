@@ -55,10 +55,14 @@ function ctlPath(profile) {
 // silence so the master dies and is recreated; ConnectTimeout bounds a fresh
 // connect. Applied to BOTH arg builders so whichever ssh creates the master
 // gives it a keepalive.
+// Detection window = ServerAliveInterval × ServerAliveCountMax ≈ 6s: after ~6s
+// of silence the ssh gives up, closing the pty so the client can reconnect.
+// Kept aggressive on purpose — tmux makes reattach lossless, so a false trip on
+// a latency spike costs only a brief "reconnecting" flicker. Tune here.
 const SSH_KEEPALIVE = [
-  '-o', 'ServerAliveInterval=5',
-  '-o', 'ServerAliveCountMax=3',
-  '-o', 'ConnectTimeout=10',
+  '-o', 'ServerAliveInterval=3',
+  '-o', 'ServerAliveCountMax=2',
+  '-o', 'ConnectTimeout=8',
 ];
 
 function sshArgs(profile) {
@@ -81,12 +85,15 @@ function sshBaseTerminalArgs(profile) {
   const args = [
     '-tt',
     '-o', 'StrictHostKeyChecking=accept-new',
-    '-o', 'ControlMaster=auto',
-    '-o', `ControlPath=${ctlPath(profile)}`,
-    '-o', 'ControlPersist=120',
-    // Keepalive so a dropped/hung network closes the pty (fires the browser
-    // WebSocket's onclose → reconnect) instead of blocking forever. Same set as
-    // sshArgs so the master always has a keepalive regardless of which ssh made it.
+    // A terminal uses its OWN dedicated ssh connection — NOT the shared
+    // ControlMaster. This is essential for reconnect: a multiplexed client
+    // ignores its own ServerAliveInterval (only the master's keepalive governs
+    // the link), so a terminal riding a master hangs indefinitely when the
+    // network drops. Standalone, the terminal's own ServerAliveInterval reliably
+    // tears the ssh down ~15s after a drop → the pty closes → the browser
+    // WebSocket fires onclose → the client reconnect loop runs.
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
     ...SSH_KEEPALIVE,
   ];
   if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));

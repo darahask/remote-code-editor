@@ -2,13 +2,13 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const TS = require('../public/tabstate.js');
 
-test('nextBackoffDelay grows exponentially and caps at 10s', () => {
+test('nextBackoffDelay grows exponentially and caps at 3s', () => {
   assert.strictEqual(TS.nextBackoffDelay(0), 1000);
   assert.strictEqual(TS.nextBackoffDelay(1), 2000);
-  assert.strictEqual(TS.nextBackoffDelay(2), 4000);
-  assert.strictEqual(TS.nextBackoffDelay(3), 8000);
-  assert.strictEqual(TS.nextBackoffDelay(4), 10000);
-  assert.strictEqual(TS.nextBackoffDelay(10), 10000);
+  assert.strictEqual(TS.nextBackoffDelay(2), 3000);
+  assert.strictEqual(TS.nextBackoffDelay(3), 3000);
+  assert.strictEqual(TS.nextBackoffDelay(4), 3000);
+  assert.strictEqual(TS.nextBackoffDelay(10), 3000);
 });
 
 test('serializeTabs keeps only terminal/explorer tabs with persistable fields', () => {
