@@ -540,10 +540,26 @@ app.delete('/api/term-session', (req, res) => {
 app.get('/api/ping', (req, res) => {
   const profile = getActive();
   if (!profile || !profile.host) return res.json({ ok: false, error: 'No active profile.' });
-  const proc = spawn('ssh', ['-o', 'ConnectTimeout=6', ...sshArgs(profile), 'true']);
+  // Standalone probe: bypass the ssh ControlMaster (ControlPath=none). A
+  // multiplexed request can hang indefinitely on a wedged master even when the
+  // remote is reachable, and ConnectTimeout only bounds a fresh connection —
+  // not a session riding an existing master. This keeps the liveness check
+  // honest and actually time-bounded.
+  const args = [
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
+    '-o', 'ConnectTimeout=6',
+  ];
+  if (profile.port && Number(profile.port) !== 22) args.push('-p', String(profile.port));
+  args.push(profile.username ? `${profile.username}@${profile.host}` : profile.host, 'true');
+  const proc = spawn('ssh', args);
   const finish = (ok) => { if (!res.headersSent) res.json({ ok }); };
-  proc.on('close', (code) => finish(code === 0));
-  proc.on('error', () => finish(false));
+  // Hard backstop so the route always responds even if ssh wedges for any reason.
+  const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (_) {} finish(false); }, 8000);
+  proc.on('close', (code) => { clearTimeout(killer); finish(code === 0); });
+  proc.on('error', () => { clearTimeout(killer); finish(false); });
 });
 
 // List live grv_* tmux sessions on the remote so the client can reconcile tabs.

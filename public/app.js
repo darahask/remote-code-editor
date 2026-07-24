@@ -372,28 +372,15 @@ async function checkConnection() {
     ok = !!data.ok;
   } catch (_) { ok = false; }
   setStatus(ok ? 'Connected' : 'Disconnected', ok ? 'ok' : 'error');
-  if (ok) {
-    // Recovered: revive any terminal whose socket is hung or is waiting out a
-    // long backoff delay — reconnect them immediately.
-    if (!_connWasOk) reconnectAllTerminals();
-  } else {
-    // Down: a half-open terminal socket can sit in OPEN forever without firing
-    // onclose. Force it closed so its onclose handler starts the reconnect loop.
-    kickStaleTerminals();
-  }
+  // On recovery, revive any terminal that's waiting out a backoff delay (or was
+  // closed by the server's ssh keepalive) — reconnect immediately.
+  // reconnectAllTerminals() skips sockets that are already open, so it never
+  // disturbs a live session. We deliberately do NOT force-close terminals while
+  // "down": the server-side ssh keepalive already closes genuinely-dead ptys,
+  // and the ping can be briefly unreliable (e.g. a hung ssh master) — killing a
+  // working terminal on a flaky ping is exactly the churn we must avoid.
+  if (ok && !_connWasOk) reconnectAllTerminals();
   _connWasOk = ok;
-}
-
-// Force-close terminal sockets the heartbeat has proven dead (the remote is
-// unreachable, so a socket still reporting OPEN is half-open). Closing it fires
-// onclose, which schedules the backoff reconnect.
-function kickStaleTerminals() {
-  for (const tab of tabs) {
-    if (tab.kind !== 'terminal' || tab.disposed) continue;
-    if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
-      try { tab.ws.close(); } catch (_) {}
-    }
-  }
 }
 
 // Self-rescheduling so the cadence can adapt: fast while disconnected, slow
